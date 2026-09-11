@@ -252,6 +252,7 @@ function useTrackerData() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [isBackendOffline, setIsBackendOffline] = useState(false);
   const saveTimeout = useRef(null);
 
   useEffect(() => {
@@ -275,11 +276,13 @@ function useTrackerData() {
           try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
           } catch (e) {}
+          setIsBackendOffline(false);
           setLoading(false);
           return;
         }
       } catch (err) {
         console.warn("Flask backend not reachable on init, falling back to local cache:", err.message);
+        setIsBackendOffline(true);
       }
 
       // 2. Fallback to localStorage
@@ -349,12 +352,14 @@ function useTrackerData() {
         setError("Couldn't save your changes locally. They're still here, but try again in a moment.");
       }
       // Background sync to Flask backend
-      api.syncData(data).catch(() => {});
+      api.syncData(data)
+        .then(() => setIsBackendOffline(false))
+        .catch(() => setIsBackendOffline(true));
     }, 400);
     return () => clearTimeout(saveTimeout.current);
   }, [data, loading]);
 
-  return { data, setData, loading, error };
+  return { data, setData, loading, error, isBackendOffline };
 }
 
 /* ============================== SMALL UI PRIMITIVES ============================== */
@@ -1882,14 +1887,15 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
 
 /* ============================== APP ROOT ============================== */
 export default function HabitMoneyTracker() {
-  const { data, setData, loading, error } = useTrackerData();
+  const { data, setData, loading, error, isBackendOffline } = useTrackerData();
   const [page, setPage] = useState("dashboard");
   const [toast, setToast] = useState(null);
 
   const showToast = useCallback((msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2200);
-  }, []);
+    const finalMsg = isBackendOffline ? `${msg} (Saved in local cache)` : msg;
+    setToast(finalMsg);
+    setTimeout(() => setToast(null), 3000);
+  }, [isBackendOffline]);
 
   if (loading || !data) {
     return (
@@ -1950,6 +1956,15 @@ export default function HabitMoneyTracker() {
       `}</style>
       <Sidebar page={page} setPage={setPage} />
       <main className="flex-1 px-4 sm:px-8 py-6 sm:py-8 pb-24 md:pb-8 max-w-5xl mx-auto w-full">
+        {isBackendOffline && (
+          <div className="mb-6 flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-xs font-medium transition-all shadow-sm" style={{ background: "var(--brass-soft)", color: "var(--ink)", border: "1px solid var(--brass)" }}>
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle size={17} style={{ color: "var(--brass)" }} />
+              <span><strong>Backend Offline:</strong> Your Flask server is unreachable. Changes are currently being saved safely to your <strong>browser cache (localStorage)</strong> and will auto-sync when the backend reconnects.</span>
+            </div>
+            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 rounded shrink-0" style={{ background: "var(--brass)", color: "#FFFFFF" }}>Browser Cache Mode</span>
+          </div>
+        )}
         {error && <div className="mb-4 text-xs px-3 py-2 rounded-lg" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>{error}</div>}
         {page === "dashboard" && <Dashboard habits={data.habits} completions={data.completions} transactions={data.transactions} categories={data.categories} salaries={data.salaries} settings={data.settings} />}
         {page === "habits" && <HabitsPage habits={data.habits} completions={data.completions} subCompletions={data.subCompletions} settings={data.settings} updateHabits={updateHabits} toggleCompletion={toggleCompletion} toggleSubCompletion={toggleSubCompletion} showToast={showToast} />}
