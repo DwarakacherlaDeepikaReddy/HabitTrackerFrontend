@@ -1,5 +1,5 @@
 // API client for Habit & Money Tracker Flask Backend
-const API_BASE = "http://127.0.0.1:5000/api";
+const API_BASE = "https://habittrackerbackend-uocv.onrender.com/api";
 
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint.startsWith('/') ? endpoint : '/' + endpoint}`;
