@@ -257,20 +257,33 @@ function useTrackerData() {
 
   useEffect(() => {
     async function initData() {
+      // 0. Load local cache first for merging
+      let cachedData = null;
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) cachedData = JSON.parse(raw);
+      } catch (e) {}
+
       // 1. Try fetching from Flask backend
       try {
         const backendData = await api.getAllData();
         if (backendData && backendData.habits) {
+          // Merge local unsynced habits with backend habits so new habits are never wiped out
+          const localHabits = cachedData?.habits || [];
+          const backendHabitIds = new Set(backendData.habits.map((h) => h.id));
+          const unsyncedLocalHabits = localHabits.filter((h) => !backendHabitIds.has(h.id));
+          const combinedHabits = [...backendData.habits, ...unsyncedLocalHabits];
+
           const merged = {
-            habits: backendData.habits.length > 0 ? backendData.habits : DEFAULT_HABITS,
-            completions: backendData.completions || [],
-            subCompletions: backendData.subCompletions || [],
-            transactions: backendData.transactions || [],
+            habits: combinedHabits.length > 0 ? combinedHabits : DEFAULT_HABITS,
+            completions: backendData.completions?.length ? backendData.completions : (cachedData?.completions || []),
+            subCompletions: backendData.subCompletions?.length ? backendData.subCompletions : (cachedData?.subCompletions || []),
+            transactions: backendData.transactions?.length ? backendData.transactions : (cachedData?.transactions || []),
             categories: backendData.categories && backendData.categories.length > 0 ? backendData.categories : DEFAULT_CATEGORIES,
-            salaries: backendData.salaries || [],
-            todos: backendData.todos || [],
-            buys: backendData.buys || [],
-            settings: { ...DEFAULT_SETTINGS, ...(backendData.settings || {}) },
+            salaries: backendData.salaries || cachedData?.salaries || [],
+            todos: backendData.todos || cachedData?.todos || [],
+            buys: backendData.buys || cachedData?.buys || [],
+            settings: { ...DEFAULT_SETTINGS, ...(cachedData?.settings || {}), ...(backendData.settings || {}) },
           };
           setData(merged);
           try {
@@ -343,14 +356,17 @@ function useTrackerData() {
 
   useEffect(() => {
     if (loading || !data) return;
+
+    // Immediately persist to browser localStorage so tab closing never loses changes
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      setError(null);
+    } catch (e) {
+      setError("Couldn't save your changes locally.");
+    }
+
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        setError(null);
-      } catch (e) {
-        setError("Couldn't save your changes locally. They're still here, but try again in a moment.");
-      }
       // Background sync to Flask backend
       api.syncData(data)
         .then(() => setIsBackendOffline(false))
@@ -1768,8 +1784,59 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
   const requestNotificationPermission = async () => {
     if (!("Notification" in window)) { showToast("Browser notifications aren't supported here"); return; }
     const perm = await Notification.requestPermission();
-    updateSettings({ ...settings, notificationsEnabled: perm === "granted" });
-    showToast(perm === "granted" ? "Notifications enabled" : "Notifications not granted");
+    const isGranted = perm === "granted";
+    updateSettings({ ...settings, notificationsEnabled: isGranted });
+
+    if (isGranted) {
+      // Subscribe device to Backend 24/7 Web Push Notifications
+      try {
+        if ("serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.ready;
+          const keyData = await api.getVapidPublicKey();
+          if (keyData && keyData.publicKey) {
+            const rawKey = keyData.publicKey;
+            const padding = '='.repeat((4 - rawKey.length % 4) % 4);
+            const base64 = (rawKey + padding).replace(/\-/g, '+').replace(/_/g, '/');
+            const rawData = window.atob(base64);
+            const convertedKey = new Uint8Array(rawData.length);
+            for (let i = 0; i < rawData.length; ++i) {
+              convertedKey[i] = rawData.charCodeAt(i);
+            }
+
+            let sub = await reg.pushManager.getSubscription();
+            if (sub) {
+              try { await sub.unsubscribe(); } catch(e) {}
+            }
+            sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: convertedKey
+            });
+            await api.subscribePush(sub.toJSON());
+            console.log("Device successfully subscribed to 24/7 Web Push!");
+          }
+        }
+      } catch (e) {
+        console.warn("Web Push registration error:", e);
+      }
+
+      try {
+        new Notification("Habit & Money Tracker", { body: "🎉 24/7 Notifications enabled! You will receive reminders even when closed." });
+      } catch (e) {}
+    }
+    showToast(isGranted ? "24/7 Notifications enabled!" : "Notification permission denied");
+  };
+
+  const sendTestNotification = () => {
+    if (!("Notification" in window) || Notification.permission !== "granted") {
+      showToast("Please enable notifications first");
+      return;
+    }
+    try {
+      new Notification("Habit Reminder Test", { body: "⏰ This is a test reminder! Your habit notifications are working." });
+      showToast("Test notification sent!");
+    } catch (e) {
+      showToast("Notification failed to send");
+    }
   };
 
   return (
@@ -1830,9 +1897,14 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
             {settings.notificationsEnabled ? <Bell size={16} color="var(--forest)" /> : <BellOff size={16} color="var(--ink-faint)" />}
             <span className="text-sm" style={{ color: "var(--ink)" }}>{settings.notificationsEnabled ? "Browser notifications enabled" : "Browser notifications disabled"}</span>
           </div>
-          <Button variant="outline" onClick={requestNotificationPermission}>{settings.notificationsEnabled ? "Re-check" : "Enable"}</Button>
+          <div className="flex gap-2">
+            {settings.notificationsEnabled && (
+              <Button variant="outline" onClick={sendTestNotification}>Test Popup</Button>
+            )}
+            <Button variant="outline" onClick={requestNotificationPermission}>{settings.notificationsEnabled ? "Re-check" : "Enable"}</Button>
+          </div>
         </div>
-        <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>Habit reminders fire from this browser tab while it's open. For reliable delivery when the app is closed, connect a backend notification service later.</p>
+        <p className="text-xs mt-2" style={{ color: "var(--ink-faint)" }}>Habit reminders fire from this browser tab while it's open. Make sure your browser and OS allow notifications.</p>
       </Card>
 
       <Card>
@@ -1885,6 +1957,71 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
   );
 }
 
+/* ============================== HABIT REMINDERS TIMER HOOK ============================== */
+function useHabitReminders(habits, completions, settings, showToast) {
+  const notifiedSet = useRef(new Set());
+
+  useEffect(() => {
+    if (!habits || !Array.isArray(habits)) return;
+
+    const checkReminders = () => {
+      const now = new Date();
+      const currentISO = todayISO();
+      const currentHHMM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      const currentMins = now.getHours() * 60 + now.getMinutes();
+
+      habits.forEach((habit) => {
+        if (!habit.reminderEnabled || !habit.reminderTime) return;
+
+        const [h, m] = habit.reminderTime.split(":").map(Number);
+        const targetMins = h * 60 + m;
+
+        // Match if current time is at or after reminder time within the same minute/hour window
+        if (currentHHMM !== habit.reminderTime && !(currentMins >= targetMins && currentMins - targetMins < 2)) return;
+
+        // Check if scheduled for today
+        if (!habitScheduledOn(habit, currentISO)) return;
+
+        // Check if already completed today
+        const isDone = completions.some((c) => c.habitId === habit.id && c.date === currentISO && c.completed);
+        if (isDone) return;
+
+        const notifKey = `${habit.id}-${currentISO}-${habit.reminderTime}`;
+        if (notifiedSet.current.has(notifKey)) return;
+
+        notifiedSet.current.add(notifKey);
+
+        // 1. In-app Toast Alert
+        showToast(`⏰ Reminder: Time for "${habit.name}"!`);
+
+        // 2. Native Browser / Service Worker Background Notification
+        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+          try {
+            if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.controller.postMessage({
+                type: 'SHOW_NOTIFICATION',
+                title: `Habit Reminder: ${habit.name}`,
+                body: habit.description ? habit.description : `It's ${habit.reminderTime}! Time to complete your habit.`
+              });
+            } else {
+              new Notification(`Habit Reminder: ${habit.name}`, {
+                body: habit.description ? habit.description : `It's ${habit.reminderTime}! Time to complete your habit.`,
+              });
+            }
+          } catch (e) {
+            console.error("Notification trigger error:", e);
+          }
+        }
+      });
+    };
+
+    checkReminders();
+    const interval = setInterval(checkReminders, 5000); // Check every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [habits, completions, settings, showToast]);
+}
+
 /* ============================== APP ROOT ============================== */
 export default function HabitMoneyTracker() {
   const { data, setData, loading, error, isBackendOffline } = useTrackerData();
@@ -1896,6 +2033,21 @@ export default function HabitMoneyTracker() {
     setToast(finalMsg);
     setTimeout(() => setToast(null), 3000);
   }, [isBackendOffline]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .then((reg) => {
+          console.log("[Service Worker] Registered scope:", reg.scope);
+        })
+        .catch((err) => {
+          console.warn("[Service Worker] Registration error:", err);
+        });
+    }
+  }, []);
+
+  useHabitReminders(data?.habits, data?.completions, data?.settings, showToast);
 
   if (loading || !data) {
     return (

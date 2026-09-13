@@ -1,5 +1,6 @@
 // API client for Habit & Money Tracker Flask Backend
 const API_BASE = "https://habittrackerbackend-uocv.onrender.com/api";
+//const API_BASE = "http://localhost:5000/api";
 
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint.startsWith('/') ? endpoint : '/' + endpoint}`;
@@ -90,6 +91,14 @@ export const api = {
     request("/settings", {
       method: "POST",
       body: JSON.stringify(settings),
+    }),
+
+  // 24/7 Web Push Notifications
+  getVapidPublicKey: () => request("/push/vapid-public-key"),
+  subscribePush: (subscription) =>
+    request("/push/subscribe", {
+      method: "POST",
+      body: JSON.stringify(subscription),
     }),
 };
 
