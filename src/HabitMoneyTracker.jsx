@@ -247,6 +247,38 @@ function parseVoiceExpense(text, categories) {
   return result;
 }
 
+async function autoSyncPushSubscription() {
+  if (typeof window === "undefined" || !("Notification" in window) || Notification.permission !== "granted") return;
+  if (!("serviceWorker" in navigator)) return;
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const keyData = await api.getVapidPublicKey();
+    if (!keyData || !keyData.publicKey) return;
+
+    const rawKey = keyData.publicKey;
+    const padding = '='.repeat((4 - rawKey.length % 4) % 4);
+    const base64 = (rawKey + padding).replace(/\-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const convertedKey = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      convertedKey[i] = rawData.charCodeAt(i);
+    }
+
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedKey
+      });
+    }
+    await api.subscribePush(sub.toJSON());
+    console.log("[Push Sync] Device push subscription synced with backend");
+  } catch (e) {
+    console.warn("[Push Sync] Error:", e);
+  }
+}
+
 /* ============================== STORAGE HOOK ============================== */
 function useTrackerData() {
   const [data, setData] = useState(null);
@@ -291,6 +323,9 @@ function useTrackerData() {
           } catch (e) {}
           setIsBackendOffline(false);
           setLoading(false);
+
+          // Auto-sync Web Push Subscription token to backend
+          autoSyncPushSubscription();
           return;
         }
       } catch (err) {
