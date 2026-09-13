@@ -1,0 +1,15 @@
+{
+  "short_name": "Habit Tracker",
+  "name": "Habit & Money Tracker",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#F5F3EC",
+  "theme_color": "#22281F",
+  "display": "standalone"
+}
