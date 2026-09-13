@@ -1826,16 +1826,27 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
     showToast(isGranted ? "24/7 Notifications enabled!" : "Notification permission denied");
   };
 
-  const sendTestNotification = () => {
+  const sendTestNotification = async () => {
     if (!("Notification" in window) || Notification.permission !== "granted") {
       showToast("Please enable notifications first");
       return;
     }
     try {
-      new Notification("Habit Reminder Test", { body: "⏰ This is a test reminder! Your habit notifications are working." });
-      showToast("Test notification sent!");
+      if ("serviceWorker" in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        await reg.showNotification("Habit Reminder Test", {
+          body: "⏰ This is a test reminder! Your habit notifications are working.",
+          icon: "/favicon.svg",
+          vibrate: [100, 50, 100]
+        });
+        showToast("Test notification sent!");
+      } else {
+        new Notification("Habit Reminder Test", { body: "⏰ This is a test reminder!" });
+        showToast("Test notification sent!");
+      }
     } catch (e) {
-      showToast("Notification failed to send");
+      console.error("Test notification error:", e);
+      showToast("Notification failed to send (Requires HTTPS on Mobile)");
     }
   };
 
