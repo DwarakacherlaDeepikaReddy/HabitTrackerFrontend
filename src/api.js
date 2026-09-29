@@ -1,34 +1,80 @@
 // API client for Habit & Money Tracker Flask Backend
-const API_BASE = "https://habittrackerbackend-uocv.onrender.com/api";
-//const API_BASE = "http://localhost:5000/api";
+const PRIMARY_API = "https://habittrackerbackend-uocv.onrender.com/api";
+const LOCAL_API = "http://localhost:5000/api";
 
 async function request(endpoint, options = {}) {
-  const url = `${API_BASE}${endpoint.startsWith('/') ? endpoint : '/' + endpoint}`;
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-      ...options,
-    });
+  const isLocal = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+  const firstBase = isLocal ? LOCAL_API : PRIMARY_API;
+  const secondBase = isLocal ? PRIMARY_API : LOCAL_API;
 
+  const token = typeof window !== "undefined" ? localStorage.getItem("authToken") : null;
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers || {}),
+  };
+
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : '/' + endpoint;
+
+  const doFetch = async (baseUrl) => {
+    const res = await fetch(`${baseUrl}${cleanEndpoint}`, {
+      ...options,
+      headers,
+    });
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
     }
-
     return await res.json();
+  };
+
+  try {
+    return await doFetch(firstBase);
   } catch (err) {
-    // If backend isn't reachable, let the caller know without crashing the UI
-    console.warn(`[API] Request to ${endpoint} failed:`, err.message);
-    throw err;
+    try {
+      return await doFetch(secondBase);
+    } catch (fallbackErr) {
+      console.warn(`[API] Both primary and fallback endpoints failed for ${cleanEndpoint}:`, err.message, fallbackErr.message);
+      const is404 = err.message.includes("404") || fallbackErr.message.includes("404");
+      if (is404) {
+        throw new Error("Auth endpoint not found on remote server yet. Please run backend locally on port 5000 or push latest changes.");
+      }
+      throw new Error(err.message.includes("Failed to fetch") ? "Could not connect to server. Please ensure backend is running." : (err.message || fallbackErr.message));
+    }
   }
 }
 
 export const api = {
   // Check backend health
   checkHealth: () => request("/health"),
+
+  // Authentication
+  register: (name, email, password) =>
+    request("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    }),
+  login: (email, password) =>
+    request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  googleAuth: (payload) =>
+    request("/auth/google", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  sendOtp: (email, name) =>
+    request("/auth/send-otp", {
+      method: "POST",
+      body: JSON.stringify({ email, name }),
+    }),
+  verifyOtp: (email, code, name) =>
+    request("/auth/verify-otp", {
+      method: "POST",
+      body: JSON.stringify({ email, code, name }),
+    }),
+  getMe: () => request("/auth/me"),
 
   // Full data sync
   getAllData: () => request("/data"),
@@ -103,3 +149,5 @@ export const api = {
 };
 
 export default api;
+
+
