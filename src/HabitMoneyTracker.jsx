@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { api } from "./api.js";
+import AuthModal from "./AuthModal.jsx";
 import {
   Home, CheckCircle2, Wallet, Settings as SettingsIcon, Plus, Mic,
   Edit2, Trash2, X, Check, Flame, ChevronLeft, ChevronRight,
   Bell, BellOff, Sun, Moon, Monitor, AlertTriangle, Clock, Loader2,
-  GripVertical, ListTodo, ShoppingBag, ArrowUp, ArrowDown, ChevronDown, ChevronUp
+  GripVertical, ListTodo, ShoppingBag, ArrowUp, ArrowDown, ChevronDown, ChevronUp,
+  User, LogIn, LogOut
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell, Tooltip,
@@ -79,6 +81,7 @@ const DEFAULT_SETTINGS = {
   notificationsEnabled: false,
   incomeTrackingEnabled: false,
   monthlyBudget: null,
+  creditLimit: null,
   salaryDay: 28,
 };
 
@@ -285,91 +288,62 @@ function useTrackerData() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isBackendOffline, setIsBackendOffline] = useState(false);
+  const [user, setUser] = useState(() => {
+    try {
+      const raw = localStorage.getItem("authUser");
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const saveTimeout = useRef(null);
 
-  useEffect(() => {
-    async function initData() {
-      // 0. Load local cache first for merging
-      let cachedData = null;
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) cachedData = JSON.parse(raw);
-      } catch (e) {}
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    let cachedData = null;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) cachedData = JSON.parse(raw);
+    } catch (e) {}
 
-      // 1. Try fetching from Flask backend
-      try {
-        const backendData = await api.getAllData();
-        if (backendData && backendData.habits) {
-          // Merge local unsynced habits with backend habits so new habits are never wiped out
-          const localHabits = cachedData?.habits || [];
-          const backendHabitIds = new Set(backendData.habits.map((h) => h.id));
-          const unsyncedLocalHabits = localHabits.filter((h) => !backendHabitIds.has(h.id));
-          const combinedHabits = [...backendData.habits, ...unsyncedLocalHabits];
+    try {
+      const backendData = await api.getAllData();
+      if (backendData && backendData.habits) {
+        const localHabits = cachedData?.habits || [];
+        const backendHabitIds = new Set(backendData.habits.map((h) => h.id));
+        const unsyncedLocalHabits = localHabits.filter((h) => !backendHabitIds.has(h.id));
+        const combinedHabits = [...backendData.habits, ...unsyncedLocalHabits];
 
-          const merged = {
-            habits: combinedHabits.length > 0 ? combinedHabits : DEFAULT_HABITS,
-            completions: backendData.completions?.length ? backendData.completions : (cachedData?.completions || []),
-            subCompletions: backendData.subCompletions?.length ? backendData.subCompletions : (cachedData?.subCompletions || []),
-            transactions: backendData.transactions?.length ? backendData.transactions : (cachedData?.transactions || []),
-            categories: backendData.categories && backendData.categories.length > 0 ? backendData.categories : DEFAULT_CATEGORIES,
-            salaries: backendData.salaries || cachedData?.salaries || [],
-            todos: backendData.todos || cachedData?.todos || [],
-            buys: backendData.buys || cachedData?.buys || [],
-            settings: { ...DEFAULT_SETTINGS, ...(cachedData?.settings || {}), ...(backendData.settings || {}) },
-          };
-          setData(merged);
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-          } catch (e) {}
-          setIsBackendOffline(false);
-          setLoading(false);
+        const merged = {
+          habits: combinedHabits.length > 0 ? combinedHabits : DEFAULT_HABITS,
+          completions: backendData.completions?.length ? backendData.completions : (cachedData?.completions || []),
+          subCompletions: backendData.subCompletions?.length ? backendData.subCompletions : (cachedData?.subCompletions || []),
+          transactions: backendData.transactions?.length ? backendData.transactions : (cachedData?.transactions || []),
+          categories: backendData.categories && backendData.categories.length > 0 ? backendData.categories : DEFAULT_CATEGORIES,
+          salaries: backendData.salaries || cachedData?.salaries || [],
+          todos: backendData.todos || cachedData?.todos || [],
+          buys: backendData.buys || cachedData?.buys || [],
+          settings: { ...DEFAULT_SETTINGS, ...(cachedData?.settings || {}), ...(backendData.settings || {}) },
+        };
+        setData(merged);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+        } catch (e) {}
+        setIsBackendOffline(false);
+        setLoading(false);
 
-          // Auto-sync Web Push Subscription token to backend
-          autoSyncPushSubscription();
-          return;
-        }
-      } catch (err) {
-        console.warn("Flask backend not reachable on init, falling back to local cache:", err.message);
-        setIsBackendOffline(true);
+        autoSyncPushSubscription();
+        return;
       }
+    } catch (err) {
+      console.warn("Flask backend not reachable on init, falling back to local cache:", err.message);
+      setIsBackendOffline(true);
+    }
 
-      // 2. Fallback to localStorage
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          setData({
-            habits: DEFAULT_HABITS,
-            completions: [],
-            subCompletions: [],
-            transactions: [],
-            categories: DEFAULT_CATEGORIES,
-            salaries: [],
-            todos: [],
-            buys: [],
-            ...parsed,
-            settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
-          });
-        } else {
-          setData({
-            habits: DEFAULT_HABITS,
-            completions: [],
-            subCompletions: [],
-            transactions: [],
-            categories: DEFAULT_CATEGORIES,
-            salaries: [],
-            todos: [
-              { id: uid("td"), text: "Pay electricity bill", completed: false },
-              { id: uid("td"), text: "Call plumber", completed: false },
-            ],
-            buys: [
-              { id: uid("b"), text: "Milk & Eggs", completed: false },
-              { id: uid("b"), text: "New notebook", completed: true },
-            ],
-            settings: DEFAULT_SETTINGS,
-          });
-        }
-      } catch (e) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
         setData({
           habits: DEFAULT_HABITS,
           completions: [],
@@ -379,20 +353,52 @@ function useTrackerData() {
           salaries: [],
           todos: [],
           buys: [],
+          ...parsed,
+          settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
+        });
+      } else {
+        setData({
+          habits: DEFAULT_HABITS,
+          completions: [],
+          subCompletions: [],
+          transactions: [],
+          categories: DEFAULT_CATEGORIES,
+          salaries: [],
+          todos: [
+            { id: uid("td"), text: "Pay electricity bill", completed: false },
+            { id: uid("td"), text: "Call plumber", completed: false },
+          ],
+          buys: [
+            { id: uid("b"), text: "Milk & Eggs", completed: false },
+            { id: uid("b"), text: "New notebook", completed: true },
+          ],
           settings: DEFAULT_SETTINGS,
         });
-      } finally {
-        setLoading(false);
       }
+    } catch (e) {
+      setData({
+        habits: DEFAULT_HABITS,
+        completions: [],
+        subCompletions: [],
+        transactions: [],
+        categories: DEFAULT_CATEGORIES,
+        salaries: [],
+        todos: [],
+        buys: [],
+        settings: DEFAULT_SETTINGS,
+      });
+    } finally {
+      setLoading(false);
     }
-
-    initData();
   }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData, user?.id]);
 
   useEffect(() => {
     if (loading || !data) return;
 
-    // Immediately persist to browser localStorage so tab closing never loses changes
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       setError(null);
@@ -402,7 +408,6 @@ function useTrackerData() {
 
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      // Background sync to Flask backend
       api.syncData(data)
         .then(() => setIsBackendOffline(false))
         .catch(() => setIsBackendOffline(true));
@@ -410,7 +415,7 @@ function useTrackerData() {
     return () => clearTimeout(saveTimeout.current);
   }, [data, loading]);
 
-  return { data, setData, loading, error, isBackendOffline };
+  return { data, setData, loading, error, isBackendOffline, user, setUser, reload: loadData };
 }
 
 /* ============================== SMALL UI PRIMITIVES ============================== */
@@ -625,32 +630,66 @@ const NAV_ITEMS = [
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
-function Sidebar({ page, setPage }) {
+function Sidebar({ page, setPage, user, onOpenAuthModal, onLogout }) {
   return (
-    <div className="hidden md:flex flex-col w-60 shrink-0 h-screen sticky top-0 px-4 py-6" style={{ background: "var(--card)", borderRight: "1px solid var(--rule)" }}>
-      <div className="flex items-center gap-2 px-2 mb-8">
-        <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "var(--ink)" }}>
-          <Flame size={16} color="var(--paper)" />
+    <div className="hidden md:flex flex-col w-60 shrink-0 h-screen sticky top-0 px-4 py-6 justify-between" style={{ background: "var(--card)", borderRight: "1px solid var(--rule)" }}>
+      <div>
+        <div className="flex items-center gap-2 px-2 mb-8">
+          <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "var(--ink)" }}>
+            <Flame size={16} color="var(--paper)" />
+          </div>
+          <span className="font-display text-lg" style={{ color: "var(--ink)" }}>Daybook</span>
         </div>
-        <span className="font-display text-lg" style={{ color: "var(--ink)" }}>Daybook</span>
+        <nav className="flex flex-col gap-1">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = page === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setPage(item.id)}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors text-left"
+                style={{ background: active ? "var(--ink)" : "transparent", color: active ? "var(--paper)" : "var(--ink-soft)" }}
+              >
+                <Icon size={17} />
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
       </div>
-      <nav className="flex flex-col gap-1">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon;
-          const active = page === item.id;
-          return (
+
+      {/* User Account Section */}
+      <div className="pt-4 border-t" style={{ borderColor: "var(--rule)" }}>
+        {user ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5 px-2">
+              <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-bold flex items-center justify-center shrink-0 text-xs">
+                {user.name ? user.name[0].toUpperCase() : "U"}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold truncate" style={{ color: "var(--ink)" }}>{user.name}</p>
+                <p className="text-[10px] truncate" style={{ color: "var(--ink-faint)" }}>{user.email}</p>
+              </div>
+            </div>
             <button
-              key={item.id}
-              onClick={() => setPage(item.id)}
-              className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors text-left"
-              style={{ background: active ? "var(--ink)" : "transparent", color: active ? "var(--paper)" : "var(--ink-soft)" }}
+              onClick={onLogout}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-stone-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all"
             >
-              <Icon size={17} />
-              {item.label}
+              <LogOut size={14} />
+              Log Out
             </button>
-          );
-        })}
-      </nav>
+          </div>
+        ) : (
+          <button
+            onClick={onOpenAuthModal}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 shadow-sm hover:opacity-90 transition-all"
+          >
+            <LogIn size={15} />
+            Sign In / Register
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -710,8 +749,10 @@ function Dashboard({ habits, completions, transactions, categories, salaries, se
   const remaining = settings.monthlyBudget ? settings.monthlyBudget - totalSpent : null;
   const salaryEntry = salaries.find((s) => s.cycleStart === cycleStart);
   const salaryAmount = salaryEntry ? Number(salaryEntry.amount) : 0;
-  const totalOutflow = monthTx.reduce((s, t) => s + Number(t.amount), 0);
-  const salaryRemaining = salaryAmount - totalOutflow;
+  const salaryOutflow = monthTx.filter((t) => (t.paymentMethod || "salary") === "salary").reduce((s, t) => s + Number(t.amount), 0);
+  const salaryRemaining = salaryAmount - salaryOutflow;
+  const creditCardSpent = monthTx.filter((t) => t.paymentMethod === "credit_card").reduce((s, t) => s + Number(t.amount), 0);
+  const creditRemaining = settings.creditLimit != null ? Number(settings.creditLimit) - creditCardSpent : null;
 
   const byCategory = useMemo(() => {
     const map = {};
@@ -728,11 +769,16 @@ function Dashboard({ habits, completions, transactions, categories, salaries, se
         <p className="text-xs uppercase tracking-widest mb-1" style={{ color: "var(--ink-faint)" }}>{new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })}</p>
         <h1 className="font-display text-3xl" style={{ color: "var(--ink)" }}>Good day. Here's where things stand.</h1>
       </div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <Card>
           <p className="text-xs uppercase tracking-wide mb-2" style={{ color: "var(--ink-faint)" }}>Today's habits</p>
           <p className="font-display text-3xl" style={{ color: "var(--forest)" }}>{habitStats.pct}%</p>
           <p className="text-xs mt-1" style={{ color: "var(--ink-soft)" }}>{habitStats.completedCount} done · {habitStats.pendingCount} pending</p>
+        </Card>
+        <Card>
+          <p className="text-xs uppercase tracking-wide mb-2" style={{ color: "var(--ink-faint)" }}>Credit card</p>
+          <p className="font-display text-2xl font-mono-ledger" style={{ color: "var(--danger)" }}>{fmtINR(creditCardSpent)}</p>
+          <p className="text-xs mt-1" style={{ color: "var(--ink-soft)" }}>{creditRemaining == null ? "Set a limit in Settings" : `${fmtINR(creditRemaining)} remaining`}</p>
         </Card>
         <Card>
           <p className="text-xs uppercase tracking-wide mb-2" style={{ color: "var(--ink-faint)" }}>Current streak</p>
@@ -759,7 +805,7 @@ function Dashboard({ habits, completions, transactions, categories, salaries, se
           </div>
           <div>
             <p className="text-xs uppercase tracking-wide mb-1" style={{ color: "var(--ink-faint)" }}>Spent</p>
-            <p className="font-display text-xl font-mono-ledger" style={{ color: "var(--danger)" }}>{fmtINR(totalOutflow)}</p>
+            <p className="font-display text-xl font-mono-ledger" style={{ color: "var(--danger)" }}>{fmtINR(salaryOutflow)}</p>
           </div>
           <div>
             <p className="text-xs uppercase tracking-wide mb-1" style={{ color: "var(--ink-faint)" }}>Remaining</p>
@@ -1441,6 +1487,7 @@ function ExpenseForm({ initial, categories, onSave, onCancel, onAddCategory }) {
   const [categoryName, setCategoryName] = useState(initial?.categoryName || categories[0]?.name || "");
   const [amount, setAmount] = useState(initial?.amount || "");
   const [information, setInformation] = useState(initial?.information || "");
+  const [paymentMethod, setPaymentMethod] = useState(initial?.paymentMethod || "salary");
   const [voicePreview, setVoicePreview] = useState(null);
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -1474,7 +1521,7 @@ function ExpenseForm({ initial, categories, onSave, onCancel, onAddCategory }) {
 
   const submit = () => {
     if (!amount || !categoryName) return;
-    onSave({ date, categoryName, amount: parseFloat(amount), information: information.trim() });
+    onSave({ date, categoryName, amount: parseFloat(amount), information: information.trim(), paymentMethod });
   };
 
   return (
@@ -1517,6 +1564,12 @@ function ExpenseForm({ initial, categories, onSave, onCancel, onAddCategory }) {
       </Field>
       <Field label="Amount (₹)">
         <TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+      </Field>
+      <Field label="Paid from">
+        <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" style={inputStyle}>
+          <option value="salary">Salary / bank balance</option>
+          <option value="credit_card">Credit card</option>
+        </select>
       </Field>
       <Field label="Information (optional)">
         <TextInput value={information} onChange={(e) => setInformation(e.target.value)} placeholder="e.g. Chennai to Hyderabad ticket" />
@@ -1572,8 +1625,10 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
 
   const salaryEntry = salaries.find((s) => s.cycleStart === cycleStart);
   const salaryAmount = salaryEntry ? Number(salaryEntry.amount) : 0;
-  const totalOutflow = monthTx.reduce((s, t) => s + Number(t.amount), 0);
-  const salaryRemaining = salaryAmount - totalOutflow;
+  const salaryOutflow = monthTx.filter((t) => (t.paymentMethod || "salary") === "salary").reduce((s, t) => s + Number(t.amount), 0);
+  const salaryRemaining = salaryAmount - salaryOutflow;
+  const creditCardSpent = monthTx.filter((t) => t.paymentMethod === "credit_card").reduce((s, t) => s + Number(t.amount), 0);
+  const creditRemaining = settings.creditLimit != null ? Number(settings.creditLimit) - creditCardSpent : null;
 
   const byCategory = useMemo(() => {
     const map = {};
@@ -1646,7 +1701,7 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
           </div>
           <div>
             <p className="text-xs uppercase tracking-wide mb-1" style={{ color: "var(--ink-faint)" }}>Spent</p>
-            <p className="font-display text-xl font-mono-ledger" style={{ color: "var(--danger)" }}>{fmtINR(totalOutflow)}</p>
+            <p className="font-display text-xl font-mono-ledger" style={{ color: "var(--danger)" }}>{fmtINR(salaryOutflow)}</p>
           </div>
           <div>
             <p className="text-xs uppercase tracking-wide mb-1" style={{ color: "var(--ink-faint)" }}>Remaining</p>
@@ -1654,6 +1709,14 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
           </div>
         </div>
         {!salaryEntry && <p className="text-xs mt-3 text-center" style={{ color: "var(--ink-faint)" }}>No salary logged for this cycle yet — add it when you receive it.</p>}
+      </Card>
+
+      <Card>
+        <h3 className="font-display text-base mb-3" style={{ color: "var(--ink)" }}>Credit card this cycle</h3>
+        <div className="grid grid-cols-2 gap-3 text-center">
+          <div><p className="text-xs uppercase tracking-wide mb-1" style={{ color: "var(--ink-faint)" }}>Spent</p><p className="font-display text-xl font-mono-ledger" style={{ color: "var(--danger)" }}>{fmtINR(creditCardSpent)}</p></div>
+          <div><p className="text-xs uppercase tracking-wide mb-1" style={{ color: "var(--ink-faint)" }}>Remaining limit</p><p className="font-display text-xl font-mono-ledger" style={{ color: creditRemaining != null && creditRemaining < 0 ? "var(--danger)" : "var(--forest)" }}>{creditRemaining == null ? "Set limit" : fmtINR(creditRemaining)}</p></div>
+        </div>
       </Card>
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1722,6 +1785,7 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
                     <th className="font-normal pb-2 text-xs uppercase tracking-wide">Date</th>
                     <th className="font-normal pb-2 text-xs uppercase tracking-wide">Category</th>
                     <th className="font-normal pb-2 text-xs uppercase tracking-wide">Amount</th>
+                    <th className="font-normal pb-2 text-xs uppercase tracking-wide">Paid from</th>
                     <th className="font-normal pb-2 text-xs uppercase tracking-wide">Information</th>
                     <th></th>
                   </tr>
@@ -1732,6 +1796,7 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
                       <td className="py-2.5 font-mono-ledger" style={{ color: "var(--ink-soft)" }}>{formatDateDisplay(t.date, settings.dateFormat)}</td>
                       <td className="py-2.5" style={{ color: "var(--ink)" }}>{t.categoryName}</td>
                       <td className="py-2.5 font-mono-ledger" style={{ color: "var(--ink)" }}>{fmtINR(t.amount)}</td>
+                      <td className="py-2.5" style={{ color: "var(--ink-soft)" }}>{t.paymentMethod === "credit_card" ? "Credit card" : "Salary"}</td>
                       <td className="py-2.5" style={{ color: "var(--ink-faint)" }}>{t.information || "—"}</td>
                       <td className="py-2.5 text-right whitespace-nowrap">
                         <button onClick={() => { setEditingTx(t); setModalOpen(true); }} className="p-1.5 rounded hover:bg-black/5"><Edit2 size={14} style={{ color: "var(--ink-faint)" }} /></button>
@@ -1754,6 +1819,7 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
                     <p className="font-mono-ledger text-sm" style={{ color: "var(--ink)" }}>{fmtINR(t.amount)}</p>
                   </div>
                   {t.information && <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>{t.information}</p>}
+                  <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>Paid from: {t.paymentMethod === "credit_card" ? "Credit card" : "Salary"}</p>
                   <div className="flex gap-2 mt-2">
                     <button onClick={() => { setEditingTx(t); setModalOpen(true); }} className="text-xs flex items-center gap-1" style={{ color: "var(--ink-soft)" }}><Edit2 size={12} />Edit</button>
                     <button onClick={() => setConfirmDelete(t.id)} className="text-xs flex items-center gap-1" style={{ color: "var(--danger)" }}><Trash2 size={12} />Delete</button>
@@ -1779,7 +1845,7 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
 }
 
 /* ============================== SETTINGS PAGE ============================== */
-function SettingsPage({ habits, updateHabits, categories, updateCategories, transactions, updateTransactions, settings, updateSettings, showToast }) {
+function SettingsPage({ habits, updateHabits, categories, updateCategories, transactions, updateTransactions, settings, updateSettings, user, onOpenAuthModal, onLogout, showToast }) {
   const [newCategory, setNewCategory] = useState("");
   const [editingCatId, setEditingCatId] = useState(null);
   const [editingCatName, setEditingCatName] = useState("");
@@ -1817,6 +1883,7 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
   };
 
   const requestNotificationPermission = async () => {
+    if (!user) { showToast("Sign in first to receive account-specific reminders"); return; }
     if (!("Notification" in window)) { showToast("Browser notifications aren't supported here"); return; }
     const perm = await Notification.requestPermission();
     const isGranted = perm === "granted";
@@ -1888,6 +1955,31 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
   return (
     <div className="space-y-6">
       <h1 className="font-display text-2xl" style={{ color: "var(--ink)" }}>Settings</h1>
+
+      <Card>
+        <h3 className="font-display text-base mb-3" style={{ color: "var(--ink)" }}>Account & Chrome Notifications</h3>
+        {user ? (
+          <div className="flex items-center justify-between flex-wrap gap-3 py-1">
+            <div>
+              <p className="text-sm font-semibold" style={{ color: "var(--ink)" }}>{user.name}</p>
+              <p className="text-xs" style={{ color: "var(--ink-faint)" }}>{user.email}</p>
+              <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400 mt-1">
+                ✓ Active Account: Chrome notifications are sent only to devices registered for this account.
+              </p>
+            </div>
+            <Button variant="outline" onClick={onLogout}>Log Out</Button>
+          </div>
+        ) : (
+          <div className="py-1 space-y-3">
+            <p className="text-xs" style={{ color: "var(--ink-soft)" }}>
+              You are using <strong>Guest / Local mode</strong>. Sign in to isolate your habits and enable Chrome notifications for scheduled habits.
+            </p>
+            <Button variant="primary" onClick={onOpenAuthModal}>
+              <LogIn size={15} /> Sign In / Register
+            </Button>
+          </div>
+        )}
+      </Card>
 
       <Card>
         <h3 className="font-display text-base mb-4" style={{ color: "var(--ink)" }}>Habits</h3>
@@ -1975,6 +2067,11 @@ function SettingsPage({ habits, updateHabits, categories, updateCategories, tran
 
         <Field label="Monthly budget (optional, ₹)">
           <TextInput type="number" value={settings.monthlyBudget ?? ""} onChange={(e) => updateSettings({ ...settings, monthlyBudget: e.target.value ? parseFloat(e.target.value) : null })} placeholder="No budget set" />
+        </Field>
+
+        <Field label="Credit card limit (optional, ₹)">
+          <TextInput type="number" min="0" value={settings.creditLimit ?? ""} onChange={(e) => updateSettings({ ...settings, creditLimit: e.target.value ? parseFloat(e.target.value) : null })} placeholder="No credit limit set" />
+          <p className="text-xs mt-1.5" style={{ color: "var(--ink-faint)" }}>Credit-card transactions are shown separately from salary spending.</p>
         </Field>
 
         <Field label="Salary day (finance cycle starts on this date each month)">
@@ -2070,15 +2167,30 @@ function useHabitReminders(habits, completions, settings, showToast) {
 
 /* ============================== APP ROOT ============================== */
 export default function HabitMoneyTracker() {
-  const { data, setData, loading, error, isBackendOffline } = useTrackerData();
+  const { data, setData, loading, error, isBackendOffline, user, setUser, reload } = useTrackerData();
   const [page, setPage] = useState("dashboard");
   const [toast, setToast] = useState(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
 
   const showToast = useCallback((msg) => {
     const finalMsg = isBackendOffline ? `${msg} (Saved in local cache)` : msg;
     setToast(finalMsg);
     setTimeout(() => setToast(null), 3000);
   }, [isBackendOffline]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("authUser");
+    setUser(null);
+    showToast("Logged out successfully");
+    reload();
+  };
+
+  const handleAuthSuccess = (userData, token) => {
+    setUser(userData);
+    showToast(`Welcome ${userData.name}! Enable Chrome notifications in Settings for habit reminders.`);
+    reload();
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined" && "serviceWorker" in navigator) {
@@ -2152,8 +2264,49 @@ export default function HabitMoneyTracker() {
         body, input, select, button { font-family: 'Inter', sans-serif; }
         @keyframes fadein { from { opacity: 0; transform: translate(-50%, 8px);} to { opacity: 1; transform: translate(-50%, 0);} }
       `}</style>
-      <Sidebar page={page} setPage={setPage} />
+      <Sidebar
+        page={page}
+        setPage={setPage}
+        user={user}
+        onOpenAuthModal={() => setAuthModalOpen(true)}
+        onLogout={handleLogout}
+      />
       <main className="flex-1 px-4 sm:px-8 py-6 sm:py-8 pb-24 md:pb-8 max-w-5xl mx-auto w-full">
+        {/* Mobile Header */}
+        <div className="flex items-center justify-between mb-4 md:hidden pb-3 border-b" style={{ borderColor: "var(--rule)" }}>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: "var(--ink)" }}>
+              <Flame size={14} color="var(--paper)" />
+            </div>
+            <span className="font-display text-base" style={{ color: "var(--ink)" }}>Daybook</span>
+          </div>
+          {user ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold" style={{ color: "var(--ink-soft)" }}>{user.name}</span>
+              <button onClick={handleLogout} className="p-1.5 rounded-lg text-stone-500 hover:text-red-600">
+                <LogOut size={15} />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAuthModalOpen(true)}
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 shadow-sm"
+            >
+              Sign In
+            </button>
+          )}
+        </div>
+
+        {/* Signed-in account notification status */}
+        {user && (
+          <div className="mb-4 px-4 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2" style={{ background: "var(--forest-soft)", color: "var(--forest)", border: "1px solid var(--forest)" }}>
+            <div className="flex items-center gap-2">
+              <Bell size={15} />
+              <span>Logged in as <strong>{user.email}</strong>. Enable Chrome notifications in Settings to receive reminders on this device.</span>
+            </div>
+          </div>
+        )}
+
         {isBackendOffline && (
           <div className="mb-6 flex items-center justify-between gap-3 px-4 py-3 rounded-xl text-xs font-medium transition-all shadow-sm" style={{ background: "var(--brass-soft)", color: "var(--ink)", border: "1px solid var(--brass)" }}>
             <div className="flex items-center gap-2.5">
@@ -2168,9 +2321,29 @@ export default function HabitMoneyTracker() {
         {page === "habits" && <HabitsPage habits={data.habits} completions={data.completions} subCompletions={data.subCompletions} settings={data.settings} updateHabits={updateHabits} toggleCompletion={toggleCompletion} toggleSubCompletion={toggleSubCompletion} showToast={showToast} />}
         {page === "reminders_buys" && <RemindersAndBuysPage todos={data.todos} buys={data.buys} updateTodos={updateTodos} updateBuys={updateBuys} showToast={showToast} />}
         {page === "money" && <MoneyPage transactions={data.transactions} categories={data.categories} updateCategories={updateCategories} salaries={data.salaries} updateSalaries={updateSalaries} settings={data.settings} updateTransactions={updateTransactions} showToast={showToast} />}
-        {page === "settings" && <SettingsPage habits={data.habits} updateHabits={updateHabits} categories={data.categories} updateCategories={updateCategories} transactions={data.transactions} updateTransactions={updateTransactions} settings={data.settings} updateSettings={updateSettings} showToast={showToast} />}
+        {page === "settings" && (
+          <SettingsPage
+            habits={data.habits}
+            updateHabits={updateHabits}
+            categories={data.categories}
+            updateCategories={updateCategories}
+            transactions={data.transactions}
+            updateTransactions={updateTransactions}
+            settings={data.settings}
+            updateSettings={updateSettings}
+            user={user}
+            onOpenAuthModal={() => setAuthModalOpen(true)}
+            onLogout={handleLogout}
+            showToast={showToast}
+          />
+        )}
       </main>
       <BottomNav page={page} setPage={setPage} />
+      <AuthModal
+        open={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onAuthSuccess={handleAuthSuccess}
+      />
       <Toast toast={toast} />
     </div>
   );
