@@ -120,6 +120,24 @@ function habitScheduledOn(habit, iso) {
   return true;
 }
 
+// Carry-over begins only when the user enables it, so old history never
+// becomes a backlog. Each uncompleted scheduled date remains pending.
+function pendingHabitDates(habit, completions, throughIso = todayISO()) {
+  if (!habit.carryPendingEnabled) return [];
+  const createdAt = habit.createdAt || (habit.created_at ? new Date(habit.created_at).getTime() : Date.now());
+  const startIso = habit.carryPendingSince || isoOf(new Date(createdAt));
+  if (startIso > throughIso) return [];
+
+  const completedDates = new Set(completions.filter((c) => c.habitId === habit.id && c.completed).map((c) => c.date));
+  const pending = [];
+  let cursor = startIso;
+  while (cursor <= throughIso) {
+    if (habitScheduledOn(habit, cursor) && !completedDates.has(cursor)) pending.push(cursor);
+    cursor = addDays(cursor, 1);
+  }
+  return pending;
+}
+
 function formatDateDisplay(iso, format = "DD/MM/YYYY") {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
@@ -875,6 +893,7 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   const [customDays, setCustomDays] = useState(Array.isArray(initial?.days) ? initial.days : []);
   const [reminderEnabled, setReminderEnabled] = useState(initial?.reminderEnabled ?? true);
   const [reminderTime, setReminderTime] = useState(initial?.reminderTime || defaultReminder || "20:00");
+  const [carryPendingEnabled, setCarryPendingEnabled] = useState(initial?.carryPendingEnabled ?? false);
   
   // Sub-items management
   const [subItems, setSubItems] = useState(initial?.subItems || []);
@@ -895,7 +914,11 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   const submit = () => {
     if (!name.trim()) return;
     const days = dayMode === "custom" ? customDays : dayMode;
-    onSave({ name: name.trim(), routineType, description: description.trim(), days, reminderEnabled, reminderTime, subItems });
+    const wasCarryPendingEnabled = initial?.carryPendingEnabled ?? false;
+    const carryPendingSince = carryPendingEnabled
+      ? (wasCarryPendingEnabled ? (initial?.carryPendingSince || todayISO()) : todayISO())
+      : null;
+    onSave({ name: name.trim(), routineType, description: description.trim(), days, reminderEnabled, reminderTime, subItems, carryPendingEnabled, carryPendingSince });
   };
 
   return (
@@ -985,6 +1008,17 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
         </div>
       </Field>
 
+      <Field label="Carry missed days forward">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={() => setCarryPendingEnabled((v) => !v)} className="w-11 h-6 rounded-full relative transition-colors" style={{ background: carryPendingEnabled ? "var(--forest)" : "var(--rule)" }} aria-label="Carry missed days forward">
+            <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: carryPendingEnabled ? 22 : 2 }} />
+          </button>
+          <p className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {carryPendingEnabled ? "Missed scheduled days remain pending until completed." : "Off — missed days stay only in history."}
+          </p>
+        </div>
+      </Field>
+
       <div className="flex gap-3 justify-end mt-4">
         <Button variant="outline" onClick={onCancel}>Cancel</Button>
         <Button variant="primary" onClick={submit}>Save habit</Button>
@@ -993,7 +1027,7 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   );
 }
 
-function HabitCard({ habit, completedToday, stats, onToggle, onToggleSub, subCompletions = [], onEdit, onDelete, onMoveUp, onMoveDown, isFirst, isLast }) {
+function HabitCard({ habit, completedToday, pendingCount = 0, stats, onToggle, onToggleSub, subCompletions = [], onEdit, onDelete, onMoveUp, onMoveDown, isFirst, isLast }) {
   const [expanded, setExpanded] = useState(true);
   const hasSubItems = habit.subItems && habit.subItems.length > 0;
 
@@ -1019,6 +1053,11 @@ function HabitCard({ habit, completedToday, stats, onToggle, onToggleSub, subCom
             {habit.reminderEnabled && (
               <span className="text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-1" style={{ background: "var(--brass-soft)", color: "var(--brass)" }}>
                 <Clock size={10} />{habit.reminderTime}
+              </span>
+            )}
+            {habit.carryPendingEnabled && pendingCount > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
+                {pendingCount} {pendingCount === 1 ? "pending task" : "pending tasks"}
               </span>
             )}
           </div>
@@ -1159,6 +1198,10 @@ const saveHabit = async (fields) => {
       reminderTime: fields.reminderTime || null,
       sub_items: fields.subItems || [],
       subItems: fields.subItems || [],
+      carry_pending_enabled: fields.carryPendingEnabled ?? false,
+      carryPendingEnabled: fields.carryPendingEnabled ?? false,
+      carry_pending_since: fields.carryPendingSince || null,
+      carryPendingSince: fields.carryPendingSince || null,
       active: true,
     };
 
@@ -1246,6 +1289,7 @@ const saveHabit = async (fields) => {
         {list.map((h, index) => {
           const completedToday = completions.some((c) => c.habitId === h.id && c.date === iso && c.completed);
           const stats = habitOverallStats(h, completions);
+          const pendingDates = pendingHabitDates(h, completions, iso);
           const activeSubCompletions = subCompletions
             .filter(sc => sc.habitId === h.id && sc.date === iso)
             .map(sc => sc.subId);
@@ -1255,9 +1299,10 @@ const saveHabit = async (fields) => {
               key={h.id} 
               habit={h} 
               completedToday={completedToday} 
+              pendingCount={pendingDates.length}
               stats={stats}
               subCompletions={activeSubCompletions}
-              onToggle={() => toggleCompletion(h.id, iso)}
+              onToggle={() => toggleCompletion(h.id, pendingDates[0] || iso)}
               onToggleSub={(hId, subId) => toggleSubCompletion(hId, subId, iso)}
               onEdit={() => { setEditingHabit(h); setModalOpen(true); }}
               onDelete={() => setConfirmDelete(h.id)}
@@ -1565,6 +1610,7 @@ function ExpenseForm({ initial, categories, onSave, onCancel, onAddCategory }) {
       <Field label="Amount (₹)">
         <TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
       </Field>
+
       <Field label="Paid from">
         <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="w-full rounded-lg px-3 py-2.5 text-sm outline-none" style={inputStyle}>
           <option value="salary">Salary / bank balance</option>
@@ -2230,7 +2276,7 @@ export default function HabitMoneyTracker() {
       if (existing) {
         completions = d.completions.map((c) => c.habitId === habitId && c.date === iso ? { ...c, completed: !c.completed, timestamp: Date.now() } : c);
       } else {
-        completions = [...d.completions, { habitId, date: iso, completed: true, timestamp: Date.now() }];
+
       }
       return { ...d, completions };
     });
