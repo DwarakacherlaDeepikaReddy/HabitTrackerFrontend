@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "./api.js";
-import { X, AlertCircle, CheckCircle, Loader2, Mail, Lock, User, LogIn, UserPlus } from "lucide-react";
+import { X, AlertCircle, CheckCircle, Loader2, Mail, Lock, User, LogIn, UserPlus, Eye, EyeOff } from "lucide-react";
 
 // Google Client ID from environment variable or app configuration
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
@@ -35,6 +35,10 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [authStep, setAuthStep] = useState("form");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const googleBtnRef = useRef(null);
@@ -43,6 +47,8 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
     if (!open) return;
     setError("");
     setSuccessMsg("");
+    setAuthStep("form");
+    setVerificationCode("");
 
     if (typeof window !== "undefined" && !window.google) {
       const script = document.createElement("script");
@@ -129,17 +135,13 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
       if (tab === "signup") {
         if (!name.trim()) throw new Error("Please enter your name");
         if (!email.trim()) throw new Error("Please enter your email");
-        if (!password || password.length < 6) throw new Error("Password must be at least 6 characters long");
+        if (!password || password.length < 10) throw new Error("Password must be at least 10 characters long");
+        if (!acceptTerms) throw new Error("Please accept the Terms & Privacy notice to continue.");
 
         const res = await api.register(name.trim(), email.trim(), password);
-        if (res?.token && res?.user) {
-          localStorage.setItem("authToken", res.token);
-          localStorage.setItem("authUser", JSON.stringify(res.user));
-          setSuccessMsg(`Registration successful! Welcome, ${res.user.name}.`);
-          setTimeout(() => {
-            onAuthSuccess(res.user, res.token);
-            onClose();
-          }, 600);
+        if (res?.verificationRequired) {
+          setAuthStep("verify-signup");
+          setSuccessMsg("We sent a verification code to your email.");
         }
       } else {
         if (!email.trim()) throw new Error("Please enter your email");
@@ -158,6 +160,53 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
       }
     } catch (err) {
       setError(err.message || "Authentication failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const completeVerification = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await api.verifySignup(email.trim(), verificationCode.trim());
+      localStorage.setItem("authToken", res.token);
+      localStorage.setItem("authUser", JSON.stringify(res.user));
+      onAuthSuccess(res.user, res.token);
+      onClose();
+    } catch (err) {
+      setError(err.message || "Verification failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const requestReset = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      await api.requestPasswordReset(email.trim());
+      setAuthStep("reset-password");
+      setSuccessMsg("If an account exists, a reset code has been sent.");
+    } catch (err) {
+      setError(err.message || "Unable to request a reset code.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const completeReset = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      await api.resetPassword(email.trim(), verificationCode.trim(), password);
+      setAuthStep("form");
+      setTab("signin");
+      setVerificationCode("");
+      setPassword("");
+      setSuccessMsg("Password reset. Please sign in with your new password.");
+    } catch (err) {
+      setError(err.message || "Password reset failed.");
     } finally {
       setLoading(false);
     }
@@ -229,7 +278,65 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
           </div>
         )}
 
-        {/* Email & Password Form */}
+        {authStep === "verify-signup" ? (
+          <div className="space-y-3">
+            <div className="text-center mb-2">
+              <Mail className="w-8 h-8 mx-auto text-stone-500 mb-2" />
+              <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-100">Verify your email</h3>
+              <p className="text-xs text-stone-500 mt-1">Enter the 6-digit code sent to {email}.</p>
+            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={verificationCode}
+              onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="123456"
+              className="w-full text-center tracking-[0.45em] py-3 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 text-stone-900 dark:text-stone-100 text-lg focus:outline-none focus:ring-2 focus:ring-stone-400"
+            />
+            <button type="button" onClick={completeVerification} disabled={loading || verificationCode.length !== 6} className="w-full py-3 px-4 bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 rounded-xl font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {loading ? "Verifying..." : "Verify email"}
+            </button>
+            <button type="button" onClick={() => { setAuthStep("form"); setVerificationCode(""); }} className="w-full text-xs text-stone-500 hover:text-stone-900 dark:hover:text-stone-200">Back to sign in</button>
+          </div>
+        ) : authStep === "reset-request" ? (
+          <div className="space-y-3">
+            <div className="text-center mb-2">
+              <Lock className="w-8 h-8 mx-auto text-stone-500 mb-2" />
+              <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-100">Reset your password</h3>
+              <p className="text-xs text-stone-500 mt-1">We’ll send a reset code to your email.</p>
+            </div>
+            <div className="relative">
+              <Mail className="w-4 h-4 absolute left-3 top-3 text-stone-400" />
+              <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="your.name@example.com" className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 text-stone-900 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400" />
+            </div>
+            <button type="button" onClick={requestReset} disabled={loading} className="w-full py-3 px-4 bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 rounded-xl font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {loading ? "Sending..." : "Send reset code"}
+            </button>
+            <button type="button" onClick={() => setAuthStep("form")} className="w-full text-xs text-stone-500 hover:text-stone-900 dark:hover:text-stone-200">Back to sign in</button>
+          </div>
+        ) : authStep === "reset-password" ? (
+          <div className="space-y-3">
+            <div className="text-center mb-2">
+              <Lock className="w-8 h-8 mx-auto text-stone-500 mb-2" />
+              <h3 className="text-sm font-semibold text-stone-800 dark:text-stone-100">Choose a new password</h3>
+              <p className="text-xs text-stone-500 mt-1">Enter the code sent to {email} and your new password.</p>
+            </div>
+            <input type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={verificationCode} onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="Reset code" className="w-full text-center tracking-[0.35em] py-3 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 text-stone-900 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400" />
+            <div className="relative">
+              <Lock className="w-4 h-4 absolute left-3 top-3 text-stone-400" />
+              <input type={showPassword ? "text" : "password"} minLength={10} required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="New password (10+ characters)" className="w-full pl-9 pr-10 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 text-stone-900 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400" />
+              <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-3 top-2.5 text-stone-400" aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button>
+            </div>
+            <button type="button" onClick={completeReset} disabled={loading || verificationCode.length !== 6 || password.length < 10} className="w-full py-3 px-4 bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 rounded-xl font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {loading ? "Updating..." : "Update password"}
+            </button>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-3">
           {tab === "signup" && (
             <div>
@@ -274,15 +381,24 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
             <div className="relative">
               <Lock className="w-4 h-4 absolute left-3 top-3 text-stone-400" />
               <input
-                type="password"
+                type={showPassword ? "text" : "password"}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder={tab === "signup" ? "10+ characters" : "••••••••"}
                 className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 text-stone-900 dark:text-stone-100 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400"
               />
+              <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-3 top-2.5 text-stone-400" aria-label={showPassword ? "Hide password" : "Show password"}>
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
+            {tab === "signup" && <>
+              <div className="h-1 rounded-full bg-stone-200 dark:bg-stone-700 overflow-hidden"><div className={`h-full transition-all ${password.length >= 14 ? "w-full bg-emerald-500" : password.length >= 10 ? "w-2/3 bg-amber-500" : "w-1/3 bg-red-400"}`} /></div>
+              <label className="flex items-start gap-2 text-[11px] text-stone-500"><input type="checkbox" checked={acceptTerms} onChange={(e) => setAcceptTerms(e.target.checked)} className="mt-0.5" /> <span>I agree to the Terms &amp; Privacy notice.</span></label>
+            </>}
           </div>
+
+          {tab === "signin" && <button type="button" onClick={() => { setAuthStep("reset-request"); setError(""); setSuccessMsg(""); }} className="text-[11px] text-stone-500 hover:text-stone-900 dark:hover:text-stone-200">Forgot password?</button>}
 
           <button
             type="submit"
@@ -299,6 +415,7 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
             )}
           </button>
         </form>
+        )}
 
         {/* Divider */}
         <div className="relative my-5">
@@ -313,31 +430,12 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
         </div>
 
         {/* Google OAuth Section */}
-        <div className="space-y-2">
+        {authStep === "form" && <div className="space-y-2">
           <div ref={googleBtnRef} className="w-full flex justify-center min-h-[44px]"></div>
-
-          <button
-            type="button"
-            disabled={googleLoading}
-            onClick={handleGoogleSignInClick}
-            className="w-full py-2.5 px-4 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-750 border border-stone-300 dark:border-stone-600 text-stone-800 dark:text-stone-100 rounded-xl font-medium text-xs transition-all shadow-sm flex items-center justify-center gap-2 disabled:opacity-50"
-          >
-            {googleLoading ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-stone-500" />
-                <span>Connecting to Google...</span>
-              </>
-            ) : (
-              <>
-                <GoogleIcon />
-                <span>Continue with Google</span>
-              </>
-            )}
-          </button>
-        </div>
+        </div>}
 
         <div className="mt-5 text-center text-[11px] text-stone-400 dark:text-stone-500 border-t border-stone-200 dark:border-stone-800 pt-3">
-          🔒 Reminders for your logged-in session will be sent directly to your registered email address.
+          🔒 Secure sign-in · Your habits sync across devices.
         </div>
       </div>
     </div>
