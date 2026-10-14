@@ -54,10 +54,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, email, password }),
     }),
+  verifySignup: (email, code) =>
+    request("/auth/verify-signup", {
+      method: "POST",
+      body: JSON.stringify({ email, code }),
+    }),
   login: (email, password) =>
     request("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    }),
+  requestPasswordReset: (email) =>
+    request("/auth/request-password-reset", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (email, code, password) =>
+    request("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ email, code, password }),
     }),
   googleAuth: (payload) =>
     request("/auth/google", {
