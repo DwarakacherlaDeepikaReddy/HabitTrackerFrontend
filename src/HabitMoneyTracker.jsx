@@ -102,6 +102,10 @@ function isoOf(date) {
 }
 
 const todayISO = () => isoOf(new Date());
+const currentTimeHHMM = () => {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+};
 
 function addDays(iso, n) {
   const d = new Date(iso + "T00:00:00");
@@ -329,13 +333,10 @@ function useTrackerData() {
     try {
       const backendData = await api.getAllData();
       if (backendData && backendData.habits) {
-        const localHabits = cachedData?.habits || [];
-        const backendHabitIds = new Set(backendData.habits.map((h) => h.id));
-        const unsyncedLocalHabits = localHabits.filter((h) => !backendHabitIds.has(h.id));
-        const combinedHabits = [...backendData.habits, ...unsyncedLocalHabits];
-
         const merged = {
-          habits: combinedHabits.length > 0 ? combinedHabits : DEFAULT_HABITS,
+          // A missing server habit was deleted on another device. Do not merge
+          // a stale browser-cache habit back into the account.
+          habits: Array.isArray(backendData.habits) ? backendData.habits : [],
           completions: backendData.completions?.length ? backendData.completions : (cachedData?.completions || []),
           subCompletions: backendData.subCompletions?.length ? backendData.subCompletions : (cachedData?.subCompletions || []),
           transactions: backendData.transactions?.length ? backendData.transactions : (cachedData?.transactions || []),
@@ -417,6 +418,18 @@ function useTrackerData() {
   }, [loadData, user?.id]);
 
   useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") loadData();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [loadData]);
+
+  useEffect(() => {
     if (loading || !data) return;
 
     try {
@@ -428,7 +441,10 @@ function useTrackerData() {
 
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      api.syncData(data)
+      // Habits use dedicated create/update/delete APIs. Excluding them from
+      // snapshot sync prevents a stale device from restoring a deleted habit.
+      const { habits, ...syncData } = data;
+      api.syncData(syncData)
         .then(() => setIsBackendOffline(false))
         .catch(() => setIsBackendOffline(true));
     }, 400);
@@ -894,7 +910,8 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   );
   const [customDays, setCustomDays] = useState(Array.isArray(initial?.days) ? initial.days : []);
   const [reminderEnabled, setReminderEnabled] = useState(initial?.reminderEnabled ?? true);
-  const [reminderTime, setReminderTime] = useState(initial?.reminderTime || defaultReminder || "20:00");
+  // New habits start at the current local time; edited habits keep their time.
+  const [reminderTime, setReminderTime] = useState(initial?.reminderTime || currentTimeHHMM());
   const [carryPendingEnabled, setCarryPendingEnabled] = useState(initial?.carryPendingEnabled ?? false);
   
   // Sub-items management
@@ -1029,7 +1046,7 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   );
 }
 
-function HabitCard({ habit, completedToday, pendingCount = 0, stats, onToggle, onToggleSub, subCompletions = [], onEdit, onDelete, onMoveUp, onMoveDown, isFirst, isLast }) {
+function HabitCard({ habit, completedToday, pendingCount = 0, stats, onToggle, onToggleSub, subCompletions = [], onEdit, onDelete, onMoveUp, onMoveDown, isFirst, isLast, selected = false, onSelect }) {
   const [expanded, setExpanded] = useState(true);
   const hasSubItems = habit.subItems && habit.subItems.length > 0;
 
@@ -1046,6 +1063,15 @@ function HabitCard({ habit, completedToday, pendingCount = 0, stats, onToggle, o
             <ArrowDown size={12} />
           </button>
         </div>
+
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onSelect?.(event.target.checked)}
+          onClick={(event) => event.stopPropagation()}
+          aria-label={`Select ${habit.name}`}
+          className="w-4 h-4 accent-[var(--forest)] shrink-0"
+        />
 
         <StampCheck checked={completedToday} onClick={onToggle} />
 
@@ -1144,6 +1170,8 @@ function HabitsPage({ habits, completions, subCompletions = [], settings, update
   const [modalOpen, setModalOpen] = useState(false);
   const [editingHabit, setEditingHabit] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [selectedHabitIds, setSelectedHabitIds] = useState([]);
   const [viewRange, setViewRange] = useState("today");
   const iso = todayISO();
 
@@ -1274,6 +1302,39 @@ const saveHabit = async (fields) => {
     showToast("Habit deleted");
   };
 
+  const toggleHabitSelection = (habitId, selected) => {
+    setSelectedHabitIds((current) => selected
+      ? [...new Set([...current, habitId])]
+      : current.filter((id) => id !== habitId));
+  };
+
+  const markSelectedComplete = () => {
+    const selectedHabits = habits.filter((habit) => selectedHabitIds.includes(habit.id));
+    selectedHabits.forEach((habit) => {
+      const pendingDates = pendingHabitDates(habit, completions, iso);
+      const completionDate = pendingDates[0] || iso;
+      const alreadyCompleted = completions.some((item) => item.habitId === habit.id && item.date === completionDate && item.completed);
+      if (!alreadyCompleted) toggleCompletion(habit.id, completionDate);
+    });
+    setSelectedHabitIds([]);
+    showToast(`${selectedHabits.length} habit${selectedHabits.length === 1 ? "" : "s"} marked complete`);
+  };
+
+  const deleteSelectedHabits = async () => {
+    const idsToDelete = selectedHabitIds;
+    await Promise.all(idsToDelete.map(async (habitId) => {
+      try {
+        await api.deleteHabit(habitId);
+      } catch (apiErr) {
+        console.warn("Backend delete failed, applying locally:", apiErr);
+      }
+    }));
+    updateHabits(habits.filter((habit) => !idsToDelete.includes(habit.id)));
+    setSelectedHabitIds([]);
+    setConfirmBulkDelete(false);
+    showToast(`${idsToDelete.length} habit${idsToDelete.length === 1 ? "" : "s"} deleted`);
+  };
+
   // Group Habits by Routine Type
   const morningHabits = habits.filter(h => (h.routineType || "normal") === "morning" && habitScheduledOn(h, iso));
   const nightHabits = habits.filter(h => (h.routineType || "normal") === "night" && habitScheduledOn(h, iso));
@@ -1312,6 +1373,8 @@ const saveHabit = async (fields) => {
               onMoveDown={() => moveHabit(index, 1, list)}
               isFirst={index === 0}
               isLast={index === list.length - 1}
+              selected={selectedHabitIds.includes(h.id)}
+              onSelect={(selected) => toggleHabitSelection(h.id, selected)}
             />
           );
         })}
@@ -1328,6 +1391,19 @@ const saveHabit = async (fields) => {
         </div>
         <Button variant="primary" onClick={() => { setEditingHabit(null); setModalOpen(true); }}><Plus size={16} />Add Habit</Button>
       </div>
+
+      {selectedHabitIds.length > 0 && (
+        <div className="flex items-center justify-between flex-wrap gap-3 px-4 py-3 rounded-xl" style={{ background: "var(--forest-soft)", border: "1px solid var(--forest)" }}>
+          <span className="text-sm font-medium" style={{ color: "var(--ink)" }}>
+            {selectedHabitIds.length} habit{selectedHabitIds.length === 1 ? "" : "s"} selected
+          </span>
+          <div className="flex gap-2">
+            <button onClick={() => setSelectedHabitIds([])} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ color: "var(--ink-soft)", border: "1px solid var(--rule)" }}>Clear</button>
+            <button onClick={markSelectedComplete} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: "var(--forest)" }}>Mark complete</button>
+            <button onClick={() => setConfirmBulkDelete(true)} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ color: "var(--danger)", border: "1px solid var(--danger)" }}>Delete</button>
+          </div>
+        </div>
+      )}
 
       {morningHabits.length === 0 && nightHabits.length === 0 && normalHabits.length === 0 ? (
         <Card><p className="text-sm text-center py-6" style={{ color: "var(--ink-faint)" }}>Nothing scheduled for today. Add a habit to get started.</p></Card>
@@ -1373,6 +1449,7 @@ const saveHabit = async (fields) => {
       </Modal>
 
       <ConfirmDialog open={!!confirmDelete} title="Delete this habit?" message="This will remove the habit and its history. This can't be undone." onConfirm={deleteHabit} onCancel={() => setConfirmDelete(null)} />
+      <ConfirmDialog open={confirmBulkDelete} title="Delete selected habits?" message="This will remove the selected habits and their history from every device. This can't be undone." onConfirm={deleteSelectedHabits} onCancel={() => setConfirmBulkDelete(false)} />
     </div>
   );
 }
