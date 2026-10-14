@@ -90,6 +90,8 @@ const STORAGE_KEY = "habit-money-tracker-data-v2";
 /* ============================== UTILS ============================== */
 const uid = (p = "id") => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const fmtINR = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
+// Older browser-cache records may not have every array. Always render with arrays.
+const arrayValue = (value) => Array.isArray(value) ? value : [];
 
 function isoOf(date) {
   const d = new Date(date);
@@ -2251,7 +2253,8 @@ export default function HabitMoneyTracker() {
     }
   }, []);
 
-  useHabitReminders(data?.habits, data?.completions, data?.settings, showToast);
+  // The backend scheduler is the single reminder sender. Keeping this tab-level
+  // reminder disabled prevents the same habit from sending two notifications.
 
   if (loading || !data) {
     return (
@@ -2260,6 +2263,19 @@ export default function HabitMoneyTracker() {
       </div>
     );
   }
+
+  const safeData = {
+    ...data,
+    habits: arrayValue(data.habits),
+    completions: arrayValue(data.completions),
+    subCompletions: arrayValue(data.subCompletions),
+    transactions: arrayValue(data.transactions),
+    categories: arrayValue(data.categories),
+    salaries: arrayValue(data.salaries),
+    todos: arrayValue(data.todos),
+    buys: arrayValue(data.buys),
+    settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) },
+  };
 
   const updateHabits = (habits) => setData((d) => ({ ...d, habits }));
   const updateCategories = (categories) => setData((d) => ({ ...d, categories }));
@@ -2271,12 +2287,13 @@ export default function HabitMoneyTracker() {
 
   const toggleCompletion = (habitId, iso) => {
     setData((d) => {
-      const existing = d.completions.find((c) => c.habitId === habitId && c.date === iso);
+      const currentCompletions = arrayValue(d.completions);
+      const existing = currentCompletions.find((c) => c.habitId === habitId && c.date === iso);
       let completions;
       if (existing) {
-        completions = d.completions.map((c) => c.habitId === habitId && c.date === iso ? { ...c, completed: !c.completed, timestamp: Date.now() } : c);
+        completions = currentCompletions.map((c) => c.habitId === habitId && c.date === iso ? { ...c, completed: !c.completed, timestamp: Date.now() } : c);
       } else {
-
+        completions = [...currentCompletions, { habitId, date: iso, completed: true, timestamp: Date.now() }];
       }
       return { ...d, completions };
     });
@@ -2296,7 +2313,7 @@ export default function HabitMoneyTracker() {
     });
   };
 
-  const isDark = data.settings.theme === "dark" || (data.settings.theme === "system" && typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  const isDark = safeData.settings.theme === "dark" || (safeData.settings.theme === "system" && typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   const vars = isDark
     ? { "--paper": PALETTE.paperDark, "--card": PALETTE.cardDark, "--ink": "#EDEAE0", "--ink-soft": "#B8BBB0", "--ink-faint": "#7C8272", "--rule": "#3A3F35", "--forest": "#6FA36A", "--forest-soft": "#2A3A2A", "--brass": "#D3A968", "--brass-soft": "#3A2F1E", "--danger": "#D9705C", "--danger-soft": "#3A2622" }
     : { "--paper": PALETTE.paper, "--card": "#FFFFFF", "--ink": PALETTE.ink, "--ink-soft": PALETTE.inkSoft, "--ink-faint": PALETTE.inkFaint, "--rule": PALETTE.rule, "--forest": PALETTE.forest, "--forest-soft": PALETTE.forestSoft, "--brass": PALETTE.brass, "--brass-soft": PALETTE.brassSoft, "--danger": PALETTE.danger, "--danger-soft": PALETTE.dangerSoft };
@@ -2363,19 +2380,19 @@ export default function HabitMoneyTracker() {
           </div>
         )}
         {error && <div className="mb-4 text-xs px-3 py-2 rounded-lg" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>{error}</div>}
-        {page === "dashboard" && <Dashboard habits={data.habits} completions={data.completions} transactions={data.transactions} categories={data.categories} salaries={data.salaries} settings={data.settings} />}
-        {page === "habits" && <HabitsPage habits={data.habits} completions={data.completions} subCompletions={data.subCompletions} settings={data.settings} updateHabits={updateHabits} toggleCompletion={toggleCompletion} toggleSubCompletion={toggleSubCompletion} showToast={showToast} />}
-        {page === "reminders_buys" && <RemindersAndBuysPage todos={data.todos} buys={data.buys} updateTodos={updateTodos} updateBuys={updateBuys} showToast={showToast} />}
-        {page === "money" && <MoneyPage transactions={data.transactions} categories={data.categories} updateCategories={updateCategories} salaries={data.salaries} updateSalaries={updateSalaries} settings={data.settings} updateTransactions={updateTransactions} showToast={showToast} />}
+        {page === "dashboard" && <Dashboard habits={safeData.habits} completions={safeData.completions} transactions={safeData.transactions} categories={safeData.categories} salaries={safeData.salaries} settings={safeData.settings} />}
+        {page === "habits" && <HabitsPage habits={safeData.habits} completions={safeData.completions} subCompletions={safeData.subCompletions} settings={safeData.settings} updateHabits={updateHabits} toggleCompletion={toggleCompletion} toggleSubCompletion={toggleSubCompletion} showToast={showToast} />}
+        {page === "reminders_buys" && <RemindersAndBuysPage todos={safeData.todos} buys={safeData.buys} updateTodos={updateTodos} updateBuys={updateBuys} showToast={showToast} />}
+        {page === "money" && <MoneyPage transactions={safeData.transactions} categories={safeData.categories} updateCategories={updateCategories} salaries={safeData.salaries} updateSalaries={updateSalaries} settings={safeData.settings} updateTransactions={updateTransactions} showToast={showToast} />}
         {page === "settings" && (
           <SettingsPage
-            habits={data.habits}
+            habits={safeData.habits}
             updateHabits={updateHabits}
-            categories={data.categories}
+            categories={safeData.categories}
             updateCategories={updateCategories}
-            transactions={data.transactions}
+            transactions={safeData.transactions}
             updateTransactions={updateTransactions}
-            settings={data.settings}
+            settings={safeData.settings}
             updateSettings={updateSettings}
             user={user}
             onOpenAuthModal={() => setAuthModalOpen(true)}
