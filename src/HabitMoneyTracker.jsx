@@ -913,6 +913,7 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   // New habits start at the current local time; edited habits keep their time.
   const [reminderTime, setReminderTime] = useState(initial?.reminderTime || currentTimeHHMM());
   const [carryPendingEnabled, setCarryPendingEnabled] = useState(initial?.carryPendingEnabled ?? false);
+  const [completionNoteEnabled, setCompletionNoteEnabled] = useState(initial?.completionNoteEnabled ?? false);
   
   // Sub-items management
   const [subItems, setSubItems] = useState(initial?.subItems || []);
@@ -937,7 +938,7 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
     const carryPendingSince = carryPendingEnabled
       ? (wasCarryPendingEnabled ? (initial?.carryPendingSince || todayISO()) : todayISO())
       : null;
-    onSave({ name: name.trim(), routineType, description: description.trim(), days, reminderEnabled, reminderTime, subItems, carryPendingEnabled, carryPendingSince });
+    onSave({ name: name.trim(), routineType, description: description.trim(), days, reminderEnabled, reminderTime, subItems, carryPendingEnabled, carryPendingSince, completionNoteEnabled });
   };
 
   return (
@@ -1038,6 +1039,17 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
         </div>
       </Field>
 
+      <Field label="Ask for a completion description">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={() => setCompletionNoteEnabled((value) => !value)} className="w-11 h-6 rounded-full relative transition-colors" style={{ background: completionNoteEnabled ? "var(--forest)" : "var(--rule)" }} aria-label="Ask for a completion description">
+            <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: completionNoteEnabled ? 22 : 2 }} />
+          </button>
+          <p className="text-xs" style={{ color: "var(--ink-faint)" }}>
+            {completionNoteEnabled ? "A description is required before this habit is marked complete." : "Off — mark this habit complete immediately."}
+          </p>
+        </div>
+      </Field>
+
       <div className="flex gap-3 justify-end mt-4">
         <Button variant="outline" onClick={onCancel}>Cancel</Button>
         <Button variant="primary" onClick={submit}>Save habit</Button>
@@ -1046,7 +1058,7 @@ function HabitForm({ initial, onSave, onCancel, defaultReminder }) {
   );
 }
 
-function HabitCard({ habit, completedToday, pendingCount = 0, stats, onToggle, onToggleSub, subCompletions = [], onEdit, onDelete, onMoveUp, onMoveDown, isFirst, isLast, selected = false, onSelect }) {
+function HabitCard({ habit, completedToday, completionNote = "", pendingCount = 0, stats, onToggle, onToggleSub, subCompletions = [], onEdit, onDelete, onMoveUp, onMoveDown, isFirst, isLast, selected = false, onSelect }) {
   const [expanded, setExpanded] = useState(true);
   const hasSubItems = habit.subItems && habit.subItems.length > 0;
 
@@ -1090,6 +1102,7 @@ function HabitCard({ habit, completedToday, pendingCount = 0, stats, onToggle, o
             )}
           </div>
           {habit.description && <p className="text-xs mt-0.5" style={{ color: "var(--ink-faint)" }}>{habit.description}</p>}
+          {completedToday && completionNote && <p className="text-xs mt-1 italic" style={{ color: "var(--forest)" }}>Today: {completionNote}</p>}
           <p className="text-xs mt-1 flex items-center gap-1" style={{ color: "var(--ink-soft)" }}>
             <Flame size={11} color="var(--brass)" /> {stats.streak} day streak · {stats.pct}% overall
           </p>
@@ -1172,6 +1185,8 @@ function HabitsPage({ habits, completions, subCompletions = [], settings, update
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [selectedHabitIds, setSelectedHabitIds] = useState([]);
+  const [completionNoteRequest, setCompletionNoteRequest] = useState(null);
+  const [completionNoteText, setCompletionNoteText] = useState("");
   const [viewRange, setViewRange] = useState("today");
   const iso = todayISO();
 
@@ -1232,6 +1247,8 @@ const saveHabit = async (fields) => {
       carryPendingEnabled: fields.carryPendingEnabled ?? false,
       carry_pending_since: fields.carryPendingSince || null,
       carryPendingSince: fields.carryPendingSince || null,
+      completion_note_enabled: fields.completionNoteEnabled ?? false,
+      completionNoteEnabled: fields.completionNoteEnabled ?? false,
       active: true,
     };
 
@@ -1308,16 +1325,36 @@ const saveHabit = async (fields) => {
       : current.filter((id) => id !== habitId));
   };
 
+  const requestCompletion = (habit, completionDate) => {
+    const existing = completions.find((item) => item.habitId === habit.id && item.date === completionDate);
+    if (existing?.completed || !habit.completionNoteEnabled) {
+      toggleCompletion(habit.id, completionDate);
+      return;
+    }
+    setCompletionNoteRequest({ habit, completionDate });
+    setCompletionNoteText("");
+  };
+
+  const saveCompletionWithNote = () => {
+    if (!completionNoteRequest || !completionNoteText.trim()) return;
+    toggleCompletion(completionNoteRequest.habit.id, completionNoteRequest.completionDate, completionNoteText.trim());
+    showToast("Habit marked complete with today's description");
+    setCompletionNoteRequest(null);
+    setCompletionNoteText("");
+  };
+
   const markSelectedComplete = () => {
     const selectedHabits = habits.filter((habit) => selectedHabitIds.includes(habit.id));
-    selectedHabits.forEach((habit) => {
+    const habitsWithoutNotes = selectedHabits.filter((habit) => !habit.completionNoteEnabled);
+    habitsWithoutNotes.forEach((habit) => {
       const pendingDates = pendingHabitDates(habit, completions, iso);
       const completionDate = pendingDates[0] || iso;
       const alreadyCompleted = completions.some((item) => item.habitId === habit.id && item.date === completionDate && item.completed);
       if (!alreadyCompleted) toggleCompletion(habit.id, completionDate);
     });
     setSelectedHabitIds([]);
-    showToast(`${selectedHabits.length} habit${selectedHabits.length === 1 ? "" : "s"} marked complete`);
+    const noteMessage = habitsWithoutNotes.length !== selectedHabits.length ? " Note-required habits must be completed individually." : "";
+    showToast(`${habitsWithoutNotes.length} habit${habitsWithoutNotes.length === 1 ? "" : "s"} marked complete.${noteMessage}`);
   };
 
   const deleteSelectedHabits = async () => {
@@ -1351,6 +1388,7 @@ const saveHabit = async (fields) => {
         </h2>
         {list.map((h, index) => {
           const completedToday = completions.some((c) => c.habitId === h.id && c.date === iso && c.completed);
+          const todayCompletion = completions.find((c) => c.habitId === h.id && c.date === iso && c.completed);
           const stats = habitOverallStats(h, completions);
           const pendingDates = pendingHabitDates(h, completions, iso);
           const activeSubCompletions = subCompletions
@@ -1362,10 +1400,11 @@ const saveHabit = async (fields) => {
               key={h.id} 
               habit={h} 
               completedToday={completedToday} 
+              completionNote={todayCompletion?.note || ""}
               pendingCount={pendingDates.length}
               stats={stats}
               subCompletions={activeSubCompletions}
-              onToggle={() => toggleCompletion(h.id, pendingDates[0] || iso)}
+              onToggle={() => requestCompletion(h, pendingDates[0] || iso)}
               onToggleSub={(hId, subId) => toggleSubCompletion(hId, subId, iso)}
               onEdit={() => { setEditingHabit(h); setModalOpen(true); }}
               onDelete={() => setConfirmDelete(h.id)}
@@ -1446,6 +1485,25 @@ const saveHabit = async (fields) => {
 
       <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditingHabit(null); }} title={editingHabit ? "Edit habit" : "Add habit"}>
         <HabitForm initial={editingHabit} onSave={saveHabit} onCancel={() => { setModalOpen(false); setEditingHabit(null); }} defaultReminder={settings.reminderDefault} />
+      </Modal>
+
+      <Modal open={!!completionNoteRequest} onClose={() => { setCompletionNoteRequest(null); setCompletionNoteText(""); }} title={`Complete ${completionNoteRequest?.habit.name || "habit"}`}>
+        <div className="space-y-4">
+          <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Add a description for this day before marking the habit complete.</p>
+          <textarea
+            value={completionNoteText}
+            onChange={(event) => setCompletionNoteText(event.target.value)}
+            placeholder="What did you do today?"
+            rows={4}
+            autoFocus
+            className="w-full px-3 py-2 rounded-xl text-sm resize-y focus:outline-none"
+            style={{ background: "var(--paper)", color: "var(--ink)", border: "1px solid var(--rule)" }}
+          />
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => { setCompletionNoteRequest(null); setCompletionNoteText(""); }}>Cancel</Button>
+            <Button variant="primary" onClick={saveCompletionWithNote} disabled={!completionNoteText.trim()}><Check size={15} />Save & complete</Button>
+          </div>
+        </div>
       </Modal>
 
       <ConfirmDialog open={!!confirmDelete} title="Delete this habit?" message="This will remove the habit and its history. This can't be undone." onConfirm={deleteHabit} onCancel={() => setConfirmDelete(null)} />
@@ -1687,7 +1745,7 @@ function ExpenseForm({ initial, categories, onSave, onCancel, onAddCategory }) {
         )}
       </Field>
       <Field label="Amount (₹)">
-        <TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+        <TextInput type="text" inputMode="decimal" pattern="[0-9]*[.]?[0-9]*" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
       </Field>
 
       <Field label="Paid from">
@@ -1736,6 +1794,17 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
   const [editingTx, setEditingTx] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [salaryModalOpen, setSalaryModalOpen] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [filterPayment, setFilterPayment] = useState("all");
+  const [showColumnControls, setShowColumnControls] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState({
+    date: true,
+    category: true,
+    amount: true,
+    payment: true,
+    information: true,
+  });
 
   const salaryDay = settings.salaryDay ?? 28;
   const currentCycleStart = useMemo(() => financeCycleStart(todayISO(), salaryDay), [salaryDay]);
@@ -1746,8 +1815,6 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
   const expenses = monthTx.filter((t) => t.categoryName !== "Savings");
   const totalExpense = expenses.reduce((s, t) => s + Number(t.amount), 0);
   const totalSavings = monthTx.filter((t) => t.categoryName === "Savings").reduce((s, t) => s + Number(t.amount), 0);
-  const remaining = settings.monthlyBudget != null ? settings.monthlyBudget - totalExpense : null;
-
   const salaryEntry = salaries.find((s) => s.cycleStart === cycleStart);
   const salaryAmount = salaryEntry ? Number(salaryEntry.amount) : 0;
   const salaryOutflow = monthTx.filter((t) => (t.paymentMethod || "salary") === "salary").reduce((s, t) => s + Number(t.amount), 0);
@@ -1799,6 +1866,14 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
   };
 
   const sortedTx = [...monthTx].sort((a, b) => b.date.localeCompare(a.date));
+  const filteredTx = sortedTx.filter((t) => {
+    const query = searchText.trim().toLowerCase();
+    const matchesText = !query || [t.categoryName, t.information, t.amount, t.date].some((value) => String(value ?? "").toLowerCase().includes(query));
+    const matchesCategory = filterCategory === "all" || t.categoryName === filterCategory;
+    const matchesPayment = filterPayment === "all" || (t.paymentMethod || "salary") === filterPayment;
+    return matchesText && matchesCategory && matchesPayment;
+  });
+  const categoryOptions = [...new Set(monthTx.map((t) => t.categoryName).filter(Boolean))].sort();
 
   return (
     <div className="space-y-6">
@@ -1844,7 +1919,7 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
         </div>
       </Card>
 
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Card>
           <p className="text-xs uppercase tracking-wide mb-2" style={{ color: "var(--ink-faint)" }}>Total expenses</p>
           <p className="font-display text-2xl font-mono-ledger" style={{ color: "var(--ink)" }}>{fmtINR(totalExpense)}</p>
@@ -1852,14 +1927,6 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
         <Card>
           <p className="text-xs uppercase tracking-wide mb-2" style={{ color: "var(--ink-faint)" }}>Total savings</p>
           <p className="font-display text-2xl font-mono-ledger" style={{ color: "var(--forest)" }}>{fmtINR(totalSavings)}</p>
-        </Card>
-        <Card>
-          <p className="text-xs uppercase tracking-wide mb-2" style={{ color: "var(--ink-faint)" }}>{settings.monthlyBudget != null ? "Remaining budget" : "Avg. daily spend"}</p>
-          <p className="font-display text-2xl font-mono-ledger" style={{ color: "var(--brass)" }}>
-            {settings.monthlyBudget != null
-              ? fmtINR(remaining)
-              : fmtINR(Math.round(totalExpense / Math.max(1, Math.round((new Date(financeCycleEnd(cycleStart, salaryDay) + "T00:00:00") - new Date(cycleStart + "T00:00:00")) / 86400000))))}
-          </p>
         </Card>
       </div>
 
@@ -1898,8 +1965,37 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
       </div>
 
       <Card>
-        <h3 className="font-display text-base mb-3" style={{ color: "var(--ink)" }}>Transactions</h3>
-        {sortedTx.length === 0 ? (
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <h3 className="font-display text-base" style={{ color: "var(--ink)" }}>Transactions</h3>
+          <button type="button" onClick={() => setShowColumnControls((value) => !value)} className="text-xs px-3 py-1.5 rounded-lg border" style={{ borderColor: "var(--rule)", color: "var(--ink-soft)" }}>
+            {showColumnControls ? "Hide filters" : "Filter / columns"}
+          </button>
+        </div>
+        {showColumnControls && (
+          <div className="mb-4 p-3 rounded-xl space-y-3" style={{ background: "var(--paper)" }}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <TextInput value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search transactions" />
+              <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className="rounded-lg px-3 py-2.5 text-sm outline-none" style={inputStyle}>
+                <option value="all">All categories</option>
+                {categoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+              <select value={filterPayment} onChange={(e) => setFilterPayment(e.target.value)} className="rounded-lg px-3 py-2.5 text-sm outline-none" style={inputStyle}>
+                <option value="all">All payment types</option>
+                <option value="salary">Salary / bank balance</option>
+                <option value="credit_card">Credit card</option>
+              </select>
+            </div>
+            <div className="flex flex-wrap gap-3 text-xs" style={{ color: "var(--ink-soft)" }}>
+              {[["date", "Date"], ["category", "Category"], ["amount", "Amount"], ["payment", "Paid from"], ["information", "Information"]].map(([key, label]) => (
+                <label key={key} className="inline-flex items-center gap-1.5">
+                  <input type="checkbox" checked={visibleColumns[key]} onChange={() => setVisibleColumns((columns) => ({ ...columns, [key]: !columns[key] }))} />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {filteredTx.length === 0 ? (
           <p className="text-sm py-6 text-center" style={{ color: "var(--ink-faint)" }}>No transactions for this month yet.</p>
         ) : (
           <>
@@ -1907,22 +2003,22 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left" style={{ color: "var(--ink-faint)" }}>
-                    <th className="font-normal pb-2 text-xs uppercase tracking-wide">Date</th>
-                    <th className="font-normal pb-2 text-xs uppercase tracking-wide">Category</th>
-                    <th className="font-normal pb-2 text-xs uppercase tracking-wide">Amount</th>
-                    <th className="font-normal pb-2 text-xs uppercase tracking-wide">Paid from</th>
-                    <th className="font-normal pb-2 text-xs uppercase tracking-wide">Information</th>
+                    {visibleColumns.date && <th className="font-normal pb-2 text-xs uppercase tracking-wide">Date</th>}
+                    {visibleColumns.category && <th className="font-normal pb-2 text-xs uppercase tracking-wide">Category</th>}
+                    {visibleColumns.amount && <th className="font-normal pb-2 text-xs uppercase tracking-wide">Amount</th>}
+                    {visibleColumns.payment && <th className="font-normal pb-2 text-xs uppercase tracking-wide">Paid from</th>}
+                    {visibleColumns.information && <th className="font-normal pb-2 text-xs uppercase tracking-wide">Information</th>}
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedTx.map((t) => (
+                  {filteredTx.map((t) => (
                     <tr key={t.id} style={{ borderTop: "1px solid var(--rule)" }}>
-                      <td className="py-2.5 font-mono-ledger" style={{ color: "var(--ink-soft)" }}>{formatDateDisplay(t.date, settings.dateFormat)}</td>
-                      <td className="py-2.5" style={{ color: "var(--ink)" }}>{t.categoryName}</td>
-                      <td className="py-2.5 font-mono-ledger" style={{ color: "var(--ink)" }}>{fmtINR(t.amount)}</td>
-                      <td className="py-2.5" style={{ color: "var(--ink-soft)" }}>{t.paymentMethod === "credit_card" ? "Credit card" : "Salary"}</td>
-                      <td className="py-2.5" style={{ color: "var(--ink-faint)" }}>{t.information || "—"}</td>
+                      {visibleColumns.date && <td className="py-2.5 font-mono-ledger" style={{ color: "var(--ink-soft)" }}>{formatDateDisplay(t.date, settings.dateFormat)}</td>}
+                      {visibleColumns.category && <td className="py-2.5" style={{ color: "var(--ink)" }}>{t.categoryName}</td>}
+                      {visibleColumns.amount && <td className="py-2.5 font-mono-ledger" style={{ color: "var(--ink)" }}>{fmtINR(t.amount)}</td>}
+                      {visibleColumns.payment && <td className="py-2.5" style={{ color: "var(--ink-soft)" }}>{t.paymentMethod === "credit_card" ? "Credit card" : "Salary"}</td>}
+                      {visibleColumns.information && <td className="py-2.5" style={{ color: "var(--ink-faint)" }}>{t.information || "—"}</td>}
                       <td className="py-2.5 text-right whitespace-nowrap">
                         <button onClick={() => { setEditingTx(t); setModalOpen(true); }} className="p-1.5 rounded hover:bg-black/5"><Edit2 size={14} style={{ color: "var(--ink-faint)" }} /></button>
                         <button onClick={() => setConfirmDelete(t.id)} className="p-1.5 rounded hover:bg-black/5"><Trash2 size={14} style={{ color: "var(--ink-faint)" }} /></button>
@@ -1934,17 +2030,17 @@ function MoneyPage({ transactions, categories, updateCategories, salaries, updat
             </div>
 
             <div className="sm:hidden space-y-2">
-              {sortedTx.map((t) => (
+              {filteredTx.map((t) => (
                 <div key={t.id} className="p-3 rounded-xl" style={{ background: "var(--paper)" }}>
                   <div className="flex justify-between items-start">
                     <div>
-                      <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>{t.categoryName}</p>
-                      <p className="text-xs font-mono-ledger" style={{ color: "var(--ink-faint)" }}>{formatDateDisplay(t.date, settings.dateFormat)}</p>
+                      {visibleColumns.category && <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>{t.categoryName}</p>}
+                      {visibleColumns.date && <p className="text-xs font-mono-ledger" style={{ color: "var(--ink-faint)" }}>{formatDateDisplay(t.date, settings.dateFormat)}</p>}
                     </div>
-                    <p className="font-mono-ledger text-sm" style={{ color: "var(--ink)" }}>{fmtINR(t.amount)}</p>
+                    {visibleColumns.amount && <p className="font-mono-ledger text-sm" style={{ color: "var(--ink)" }}>{fmtINR(t.amount)}</p>}
                   </div>
-                  {t.information && <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>{t.information}</p>}
-                  <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>Paid from: {t.paymentMethod === "credit_card" ? "Credit card" : "Salary"}</p>
+                  {visibleColumns.information && t.information && <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>{t.information}</p>}
+                  {visibleColumns.payment && <p className="text-xs mt-1" style={{ color: "var(--ink-faint)" }}>Paid from: {t.paymentMethod === "credit_card" ? "Credit card" : "Salary"}</p>}
                   <div className="flex gap-2 mt-2">
                     <button onClick={() => { setEditingTx(t); setModalOpen(true); }} className="text-xs flex items-center gap-1" style={{ color: "var(--ink-soft)" }}><Edit2 size={12} />Edit</button>
                     <button onClick={() => setConfirmDelete(t.id)} className="text-xs flex items-center gap-1" style={{ color: "var(--danger)" }}><Trash2 size={12} />Delete</button>
@@ -2362,15 +2458,15 @@ export default function HabitMoneyTracker() {
   const updateTodos = (todos) => setData((d) => ({ ...d, todos }));
   const updateBuys = (buys) => setData((d) => ({ ...d, buys }));
 
-  const toggleCompletion = (habitId, iso) => {
+  const toggleCompletion = (habitId, iso, note = "") => {
     setData((d) => {
       const currentCompletions = arrayValue(d.completions);
       const existing = currentCompletions.find((c) => c.habitId === habitId && c.date === iso);
       let completions;
       if (existing) {
-        completions = currentCompletions.map((c) => c.habitId === habitId && c.date === iso ? { ...c, completed: !c.completed, timestamp: Date.now() } : c);
+        completions = currentCompletions.map((c) => c.habitId === habitId && c.date === iso ? { ...c, completed: !c.completed, note: note || c.note || "", timestamp: Date.now() } : c);
       } else {
-        completions = [...currentCompletions, { habitId, date: iso, completed: true, timestamp: Date.now() }];
+        completions = [...currentCompletions, { habitId, date: iso, completed: true, note, timestamp: Date.now() }];
       }
       return { ...d, completions };
     });
