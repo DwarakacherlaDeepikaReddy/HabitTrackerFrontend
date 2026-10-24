@@ -91,6 +91,7 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
         client_id: GOOGLE_CLIENT_ID.trim(),
         callback: handleGoogleCredentialResponse,
         auto_select: false,
+        context: "signin",
       });
 
       if (googleBtnRef.current) {
@@ -99,7 +100,8 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
           type: "standard",
           theme: "outline",
           size: "large",
-          width: "100%",
+          // Google Identity Services expects a numeric pixel width.
+          width: 360,
           text: "continue_with",
           shape: "rectangular",
           logo_alignment: "left",
@@ -122,6 +124,8 @@ export function AuthModal({ open, onClose, onAuthSuccess }) {
       setError("Google sign-in script is loading. Please try again or use Email Sign Up.");
       return;
     }
+    // Force the account chooser so users can select any signed-in Google account.
+    window.google.accounts.id.disableAutoSelect?.();
     window.google.accounts.id.prompt();
   };
 

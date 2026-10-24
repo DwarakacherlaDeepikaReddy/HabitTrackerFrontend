@@ -86,6 +86,7 @@ const DEFAULT_SETTINGS = {
 };
 
 const STORAGE_KEY = "habit-money-tracker-data-v2";
+const storageKeyFor = (userId) => `${STORAGE_KEY}:${userId || "guest"}`;
 
 /* ============================== UTILS ============================== */
 const uid = (p = "id") => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -325,10 +326,23 @@ function useTrackerData() {
   const loadData = useCallback(async () => {
     setLoading(true);
     let cachedData = null;
+    const token = localStorage.getItem("authToken");
+    const cacheKey = storageKeyFor(user?.id);
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(cacheKey);
       if (raw) cachedData = JSON.parse(raw);
     } catch (e) {}
+
+    // Do not query or write the shared guest namespace after logout.
+    if (!token) {
+      setData(cachedData || {
+        habits: DEFAULT_HABITS, completions: [], subCompletions: [], transactions: [],
+        categories: DEFAULT_CATEGORIES, salaries: [], todos: [], buys: [], settings: DEFAULT_SETTINGS,
+      });
+      setIsBackendOffline(false);
+      setLoading(false);
+      return;
+    }
 
     try {
       const backendData = await api.getAllData();
@@ -337,18 +351,18 @@ function useTrackerData() {
           // A missing server habit was deleted on another device. Do not merge
           // a stale browser-cache habit back into the account.
           habits: Array.isArray(backendData.habits) ? backendData.habits : [],
-          completions: backendData.completions?.length ? backendData.completions : (cachedData?.completions || []),
-          subCompletions: backendData.subCompletions?.length ? backendData.subCompletions : (cachedData?.subCompletions || []),
-          transactions: backendData.transactions?.length ? backendData.transactions : (cachedData?.transactions || []),
-          categories: backendData.categories && backendData.categories.length > 0 ? backendData.categories : DEFAULT_CATEGORIES,
-          salaries: backendData.salaries || cachedData?.salaries || [],
-          todos: backendData.todos || cachedData?.todos || [],
-          buys: backendData.buys || cachedData?.buys || [],
-          settings: { ...DEFAULT_SETTINGS, ...(cachedData?.settings || {}), ...(backendData.settings || {}) },
+          completions: Array.isArray(backendData.completions) ? backendData.completions : [],
+          subCompletions: Array.isArray(backendData.subCompletions) ? backendData.subCompletions : [],
+          transactions: Array.isArray(backendData.transactions) ? backendData.transactions : [],
+          categories: Array.isArray(backendData.categories) ? backendData.categories : [],
+          salaries: Array.isArray(backendData.salaries) ? backendData.salaries : [],
+          todos: Array.isArray(backendData.todos) ? backendData.todos : [],
+          buys: Array.isArray(backendData.buys) ? backendData.buys : [],
+          settings: { ...DEFAULT_SETTINGS, ...(backendData.settings || {}) },
         };
         setData(merged);
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+          localStorage.setItem(cacheKey, JSON.stringify(merged));
         } catch (e) {}
         setIsBackendOffline(false);
         setLoading(false);
@@ -362,7 +376,7 @@ function useTrackerData() {
     }
 
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(cacheKey);
       if (raw) {
         const parsed = JSON.parse(raw);
         setData({
@@ -411,7 +425,7 @@ function useTrackerData() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     loadData();
@@ -433,12 +447,13 @@ function useTrackerData() {
     if (loading || !data) return;
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      localStorage.setItem(storageKeyFor(user?.id), JSON.stringify(data));
       setError(null);
     } catch (e) {
       setError("Couldn't save your changes locally.");
     }
 
+    if (!user?.id || !localStorage.getItem("authToken")) return;
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
       // Habits use dedicated create/update/delete APIs. Excluding them from
@@ -449,7 +464,7 @@ function useTrackerData() {
         .catch(() => setIsBackendOffline(true));
     }, 400);
     return () => clearTimeout(saveTimeout.current);
-  }, [data, loading]);
+  }, [data, loading, user?.id]);
 
   return { data, setData, loading, error, isBackendOffline, user, setUser, reload: loadData };
 }
@@ -2351,9 +2366,11 @@ function useHabitReminders(habits, completions, settings, showToast) {
         if (isDone) return;
 
         const notifKey = `${habit.id}-${currentISO}-${habit.reminderTime}`;
-        if (notifiedSet.current.has(notifKey)) return;
+        const browserNotifKey = `daybook-reminder:${notifKey}`;
+        if (notifiedSet.current.has(notifKey) || localStorage.getItem(browserNotifKey) === "1") return;
 
         notifiedSet.current.add(notifKey);
+        try { localStorage.setItem(browserNotifKey, "1"); } catch (e) {}
 
         // 1. In-app Toast Alert
         showToast(`⏰ Reminder: Time for "${habit.name}"!`);
@@ -2404,13 +2421,11 @@ export default function HabitMoneyTracker() {
     localStorage.removeItem("authUser");
     setUser(null);
     showToast("Logged out successfully");
-    reload();
   };
 
   const handleAuthSuccess = (userData, token) => {
     setUser(userData);
     showToast(`Welcome ${userData.name}! Enable Chrome notifications in Settings for habit reminders.`);
-    reload();
   };
 
   useEffect(() => {
@@ -2474,7 +2489,7 @@ export default function HabitMoneyTracker() {
 
   const toggleSubCompletion = (habitId, subId, iso) => {
     setData((d) => {
-      const subCompletions = d.subCompletions || [];
+      const subCompletions = arrayValue(d.subCompletions);
       const existing = subCompletions.find((sc) => sc.habitId === habitId && sc.subId === subId && sc.date === iso);
       let updated;
       if (existing) {
